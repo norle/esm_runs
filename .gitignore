@@ -1,0 +1,5 @@
+__pycache__
+embeddings
+models
+*.pyc
+plots

@@ -37,8 +37,14 @@ def get_mean_embedding(client, sequence, device):
 def main():
 
     model_name = 'esmc_600m'
-    fasta_path = '/home/s233201/esm_runs/inputs/ARO8.fasta'  # Changed from JSON to FASTA
-    output_path = '/home/s233201/esm_runs/embeddings/aro8.npy'
+    fasta_path = '/home/s233201/esm_runs/inputs_new/LYS20.fasta'
+    # Define separate output paths for embeddings and IDs
+    output_dir = Path('/home/s233201/esm_runs/embeddings_new')
+    output_dir.mkdir(parents=True, exist_ok=True) # Ensure directory exists
+    base_name = Path(fasta_path).stem # e.g., 'ARO8'
+    embeddings_output_path = output_dir / f"{base_name}_embeddings.npy"
+    ids_output_path = output_dir / f"{base_name}_ids.txt"
+
 
     # Check if CUDA is available and set to GPU 1
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -48,7 +54,7 @@ def main():
         torch.cuda.set_device(1)  # Use the second GPU
         print(f"Using CUDA device 1: {torch.cuda.get_device_name(1)}")
         print(f"GPU Memory Available: {torch.cuda.get_device_properties(1).total_memory / 1024**2:.0f}MB")
-    
+
     # Load the ESM model
     print(f"Loading model {model_name}...")
     client = ESMC.from_pretrained(model_name).to(device)
@@ -60,19 +66,28 @@ def main():
     
     # Process each sequence
     embeddings_list = []
+    ids_list = [] # List to store protein IDs
     for i, (protein_id, sequence) in tqdm(enumerate(sequences.items())):
         #print(f"Processing protein {i+1}/{len(sequences)}: {protein_id}")
         try:
             mean_embedding = get_mean_embedding(client, sequence, device)
             embeddings_list.append(mean_embedding.cpu().detach().numpy())
+            ids_list.append(protein_id) # Store the ID
             #print(f"Successfully processed {protein_id}, embedding shape: {mean_embedding.shape}")
         except Exception as e:
             print(f"Error processing {protein_id}: {e}")
-    
-    # Convert list to numpy array and save
+
+    # Convert list to numpy array and save embeddings
     embeddings_array = np.array(embeddings_list)
-    print(f"Saving embeddings array with shape {embeddings_array.shape} to {output_path}...")
-    np.save(output_path, embeddings_array)
+    print(f"Saving embeddings array with shape {embeddings_array.shape} to {embeddings_output_path}...")
+    np.save(embeddings_output_path, embeddings_array)
+
+    # Save IDs to a text file
+    print(f"Saving {len(ids_list)} protein IDs to {ids_output_path}...")
+    with open(ids_output_path, 'w') as f:
+        for protein_id in ids_list:
+            f.write(f"{protein_id}\n")
+
     print("Done!")
 
 

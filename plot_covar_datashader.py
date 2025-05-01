@@ -12,17 +12,31 @@ from scipy.spatial.distance import pdist, squareform
 matplotlib.use('agg')
 
 def plot_dms_datashader(dm1, dm2, dm1_name='dm1', dm2_name='dm2', gene_name='gene', ax=None, fig=None):
-    # Align both dms - use only first 13 chars
-    dm1.iloc[:, 0] = dm1.iloc[:, 0].str[:13]
-    dm2.iloc[:, 0] = dm2.iloc[:, 0].str[:13]
-    
+    # Ensure the first column is the index for alignment
+    if dm1.columns[0] != 'accession':
+        dm1 = dm1.set_index(dm1.columns[0])
+    else:
+        dm1 = dm1.set_index('accession')
+
+    if dm2.columns[0] != 'accession':
+        dm2 = dm2.set_index(dm2.columns[0])
+    else:
+        dm2 = dm2.set_index('accession')
+
+    # Find common accessions
+    common_accessions = dm1.index.intersection(dm2.index)
+
+    # Reindex both dataframes (rows and columns) to align them
+    dm1_aligned = dm1.loc[common_accessions, common_accessions]
+    dm2_aligned = dm2.loc[common_accessions, common_accessions]
+
     # Get numerical arrays and flatten upper triangle
-    dm1_array = dm1.iloc[:, 1:].to_numpy()
-    dm2_array = dm2.iloc[:, 1:].to_numpy()
+    dm1_array = dm1_aligned.to_numpy()
+    dm2_array = dm2_aligned.to_numpy()
     rows, cols = np.triu_indices(dm1_array.shape[0], k=1)
     dm1_flat = dm1_array[rows, cols]
     dm2_flat = dm2_array[rows, cols]
-    
+
     df = pd.DataFrame({
         'x': dm1_flat,
         'y': dm2_flat
@@ -65,40 +79,47 @@ def plot_dms_datashader(dm1, dm2, dm1_name='dm1', dm2_name='dm2', gene_name='gen
 def process_gene(gene):
     """Process a single gene and return the processed data"""
     print(f"Processing gene: {gene}")
-    
+
     # Load ESM embeddings
-    embed = np.load(f'/home/s233201/esm_runs/embeddings/{gene}.npy')
+    embed = np.load(f'/home/s233201/esm_runs/embeddings_new/{gene.upper()}_embeddings.npy')
     if embed.ndim == 1:
         embed = embed.reshape(-1, 1)
-        
+
     # Load phylogenetic distance matrix
-    phylo = pd.read_csv(f'/home/s233201/full_dist_mats/full_mat_{gene.upper()}.csv',
+    phylo_raw = pd.read_csv(f'/home/s233201/full_dist_mats/new/full_mat_{gene.upper()}.csv',
                        sep='\s+', header=None, skiprows=1)
-    
-    # Get accessions from phylo matrix
-    phylo_accessions = phylo.iloc[:, 0].values
-    
+
+    # Get accessions from phylo matrix and set as index/columns
+    phylo_accessions = phylo_raw.iloc[:, 0].values
+    phylo = pd.DataFrame(phylo_raw.iloc[:, 1:].values, index=phylo_accessions, columns=phylo_accessions)
+
+    # Load accessions used for embeddings (assuming these match the order in the .npy file)
+    # It's crucial that the order of accessions here matches the order of embeddings in the .npy file
+    # If not, load the accessions corresponding to the .npy file correctly.
+    # For this example, assuming 'lys20_dm_clusters.csv' contains the correct ordered accessions for the embeddings.
+    # A safer approach would be to save accessions alongside embeddings.
+    embed_accessions = []
+    with open(f'/home/s233201/esm_runs/embeddings_new/{gene.upper()}_ids.txt', 'r') as f:
+        embed_accessions = [line.strip() for line in f.readlines()[:embed.shape[0]]]  # Ensure we only take as many accessions as embeddings
+
     # Create DataFrame with accessions and embeddings
-    accessions = pd.read_csv('/home/s233201/esm_runs/clusters/phylo_clusters/lys20_dm_clusters.csv')['accession'].values
-    embed_df = pd.DataFrame(embed)
-    embed_df.index = accessions
-    embed_df = embed_df.reindex(phylo.iloc[:, 0].values)
-    
+    embed_df = pd.DataFrame(embed, index=embed_accessions)
+
     # Convert to distance matrix using cosine distance
     embed_dist = pd.DataFrame(
         squareform(pdist(embed_df.values, metric='cosine')),
-        index=phylo.iloc[:, 0].values,
-        columns=phylo.iloc[:, 0].values
+        index=embed_accessions,
+        columns=embed_accessions
     )
-    
-    # Create DataFrames for plot_dms
-    dm1 = pd.DataFrame(embed_dist)
-    dm1.insert(0, 'accession', dm1.index)
-    
+
+    # Reset index to add 'accession' column for plot_dms_datashader compatibility
+    dm1 = embed_dist.reset_index().rename(columns={'index': 'accession'})
+    dm2 = phylo.reset_index().rename(columns={'index': 'accession'})
+
     dm1_name = f'{gene} ESM distances'
     dm2_name = f'{gene} phylogenetic distances'
-    
-    return dm1, phylo, dm1_name, dm2_name, gene
+
+    return dm1, dm2, dm1_name, dm2_name, gene
 
 if __name__ == '__main__':
     gene_names = ["lys20", "aco2", "lys4", "lys12", "aro8", "lys2", "lys9", "lys1"]

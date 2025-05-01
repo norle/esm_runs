@@ -188,7 +188,7 @@ if __name__ == "__main__":
     # Example usage with direct string inputs
     embeddings_path = "/home/s233201/esm_runs/embeddings"  # Directory with multiple .npy files
     valid_accessions_csv = "/home/s233201/esm_runs/data/taxa_clean_0424.csv"
-    embeddings_accessions_csv = "/home/s233201/esm_runs/inputs/taxa.csv"
+    embeddings_accessions_csv = "/home/s233201/esm_runs/inputs/ordered_taxa.csv"
     
     # Filter embeddings
     _, _, stats = filter_embeddings(embeddings_path, valid_accessions_csv, embeddings_accessions_csv)

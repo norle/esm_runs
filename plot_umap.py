@@ -112,9 +112,9 @@ def create_umap_plot(embeddings, protein_ids, output_dir, gene_name, phyla=None,
 
 def main(gene_name, use_subplots=False, fig=None, ax=None, save_format='png'):
     # Paths
-    embedding_file = f'/home/s233201/esm_runs/embeddings/{gene_name.lower()}.npy'
-    taxa_file = '/home/s233201/esm_runs/inputs/taxa.csv'
-    fasta_file = f'/home/s233201/esm_runs/inputs/{gene_name}.fasta'
+    embedding_file = f'/home/s233201/esm_runs/embeddings/filtered_embeddings/{gene_name.lower()}.npy'
+    taxa_file = '/home/s233201/esm_runs/inputs/ordered_taxa.csv'
+    fasta_file = f'/home/s233201/esm_runs/inputs_new/{gene_name}.fasta'
     output_dir = '/home/s233201/esm_runs/plots'
     
     taxa_dict = load_taxa_info(taxa_file)
@@ -135,9 +135,9 @@ def main(gene_name, use_subplots=False, fig=None, ax=None, save_format='png'):
 
 def process_gene_data(gene_name):
     """Process single gene and return UMAP coordinates and phyla"""
-    embedding_file = f'/home/s233201/esm_runs/embeddings/{gene_name.lower()}.npy'
+    embedding_file = f'/home/s233201/esm_runs/embeddings_new/{gene_name}_embeddings.npy'
     taxa_file = '/home/s233201/esm_runs/inputs/taxa.csv'
-    fasta_file = f'/home/s233201/esm_runs/inputs/{gene_name}.fasta'
+    fasta_file = f'/home/s233201/esm_runs/inputs_new/{gene_name}.fasta'
     
     taxa_dict = load_taxa_info(taxa_file)
     fasta_accessions = get_fasta_accessions(fasta_file)
@@ -184,29 +184,35 @@ if __name__ == "__main__":
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
         axes = axes.ravel()
         
-        # Find global limits for consistent scaling
-        all_coords = np.vstack([coords for _, coords, _ in results])
-        min_val = all_coords.min()
-        max_val = all_coords.max()
-        plot_range = max_val - min_val
-        center = (max_val + min_val) / 2
-        
-        # Plot results with consistent square dimensions
+        # Plot results with individual square dimensions
         for idx, (gene_name, umap_coords, phyla) in enumerate(results):
             ax = axes[idx]
             for phylum in PHYLUM_COLORS.keys():
                 if phylum in set(phyla):
                     mask = [p == phylum for p in phyla]
                     ax.scatter(umap_coords[mask, 0], umap_coords[mask, 1],
-                             alpha=0.8,
+                             alpha=0.6,
                              label=phylum,
                              color=PHYLUM_COLORS[phylum],
-                             s=12,
+                             s=0.5,
                              zorder=2)
             
-            # Set consistent square limits
-            ax.set_xlim(center - plot_range/2, center + plot_range/2)
-            ax.set_ylim(center - plot_range/2, center + plot_range/2)
+            # Calculate the data limits for this subplot
+            x_min, x_max = umap_coords[:, 0].min(), umap_coords[:, 0].max()
+            y_min, y_max = umap_coords[:, 1].min(), umap_coords[:, 1].max()
+            
+            # Calculate ranges and centers
+            x_range = x_max - x_min
+            y_range = y_max - y_min
+            x_center = (x_max + x_min) / 2
+            y_center = (y_max + y_min) / 2
+            
+            # Use the larger range to make the plot square
+            max_range = max(x_range, y_range) * 1.1  # Add 10% padding
+            
+            # Set square limits centered on the data
+            ax.set_xlim(x_center - max_range/2, x_center + max_range/2)
+            ax.set_ylim(y_center - max_range/2, y_center + max_range/2)
             
             # Remove axis ticks and labels
             ax.set_xticks([])

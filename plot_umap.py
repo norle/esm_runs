@@ -21,6 +21,16 @@ PHYLUM_COLORS = {
     'Cryptomycota': '#a65628'      # Brown
 }
 
+# Add special organisms for labeling
+SPECIAL_ORGANISMS = {
+    "GCF_000146045": "Saccharomyces cerevisiae",
+    "GCA_000230395": "Aspergillus niger",
+    "GCF_000002655": "Aspergillus fumigatus",
+    "GCF_000182895": "Coprinopsis cinerea",
+    "GCF_000149305": "Rhizopus delemar",
+    "GCF_028827035": "Penicillium chrysogenum"
+}
+
 def load_embeddings(embedding_file):
     """Load embeddings from saved numpy file."""
     embeddings = np.load(embedding_file)
@@ -47,7 +57,65 @@ def get_fasta_accessions(fasta_file):
         accessions.append(acc)
     return accessions
 
-def create_umap_plot(embeddings, protein_ids, output_dir, gene_name, phyla=None, ax=None, save_format='png'):
+def add_organism_labels(ax, umap_coords, accessions, fontsize=6):
+    """Add labels with lines pointing to special organisms."""
+    # Get axis limits to ensure labels stay within bounds
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    width = x_max - x_min
+    height = y_max - y_min
+    
+    # Reduced fontsize for labels
+    fontsize = fontsize * 0.8
+    
+    for i, acc in enumerate(accessions):
+        # Strip version number if present
+        base_acc = acc.split('.')[0]
+        if base_acc in SPECIAL_ORGANISMS:
+            # Get the coordinates for this organism
+            x, y = umap_coords[i, 0], umap_coords[i, 1]
+            
+            # Determine whether to place label above or below based on position in plot
+            # Alternate between top and bottom placement for better distribution
+            idx = list(SPECIAL_ORGANISMS.keys()).index(base_acc)
+            if idx % 2 == 0:  # Even indices: place label above the point
+                offset_dist = height * 0.1  # 10% of plot height
+                offset_y = offset_dist
+                va_setting = 'bottom'
+            else:  # Odd indices: place label below the point
+                offset_dist = -height * 0.1
+                offset_y = offset_dist
+                va_setting = 'top'
+            
+            # Keep x-coordinate the same for straight vertical lines
+            offset_x = 0
+            
+            # Make sure label stays within axis limits with a small margin
+            margin = min(width, height) * 0.05
+            label_x = x  # Keep x-coordinate aligned with point
+            label_y = min(max(y + offset_y, y_min + margin), y_max - margin)
+            
+            # Add a straight line pointing to the organism
+            ax.annotate(
+                SPECIAL_ORGANISMS[base_acc],
+                xy=(x, y),  # Position of the organism
+                xytext=(label_x, label_y),  # Position of the text label
+                fontsize=fontsize,
+                color='black',
+                ha='center',
+                va=va_setting,
+                arrowprops=dict(
+                    arrowstyle="-",  # Simple line instead of arrow
+                    connectionstyle="arc3,rad=0",  # Straight line (rad=0)
+                    color='black',
+                    lw=0.5,
+                    alpha=0.7
+                ),
+                bbox=None,  # No background box
+                zorder=5  # Place above points but below other elements
+            )
+
+def create_umap_plot(embeddings, protein_ids, output_dir, gene_name, phyla=None, ax=None, save_format='png', fasta_accessions=None):
     """Create and save UMAP plot of embeddings."""
     print(f"Input embedding matrix shape: {embeddings.shape}")
     
@@ -99,6 +167,10 @@ def create_umap_plot(embeddings, protein_ids, output_dir, gene_name, phyla=None,
     
     ax.set_title(f'{gene_name}')
     
+    # Add labels for special organisms if accessions are provided
+    if fasta_accessions is not None:
+        add_organism_labels(ax, umap_coords, fasta_accessions, fontsize=8 if ax is None else 6)
+    
     # Only save if we're not using subplots
     if ax is None:
         os.makedirs(output_dir, exist_ok=True)
@@ -127,7 +199,8 @@ def main(gene_name, use_subplots=False, fig=None, ax=None, save_format='png'):
     
     print("Creating UMAP plot...")
     create_umap_plot(embeddings, protein_ids, output_dir, gene_name, 
-                    phyla=phyla, ax=ax, save_format=save_format)
+                    phyla=phyla, ax=ax, save_format=save_format,
+                    fasta_accessions=fasta_accessions)  # Pass accessions for labeling
     
     if not use_subplots:
         ext = 'png' if save_format == 'png' else 'fig.pickle'
@@ -158,7 +231,7 @@ def process_gene_data(gene_name):
     )
     
     umap_coords = umap.fit_transform(distance_matrix)
-    return gene_name, umap_coords, phyla
+    return gene_name, umap_coords, phyla, fasta_accessions  # Return accessions too
 
 if __name__ == "__main__":
     gene_names = ["LYS20", "ACO2", "LYS4", "LYS12", "ARO8", "LYS2", "LYS9", "LYS1"]
@@ -185,7 +258,7 @@ if __name__ == "__main__":
         axes = axes.ravel()
         
         # Plot results with individual square dimensions
-        for idx, (gene_name, umap_coords, phyla) in enumerate(results):
+        for idx, (gene_name, umap_coords, phyla, fasta_accessions) in enumerate(results):
             ax = axes[idx]
             for phylum in PHYLUM_COLORS.keys():
                 if phylum in set(phyla):
@@ -213,6 +286,9 @@ if __name__ == "__main__":
             # Set square limits centered on the data
             ax.set_xlim(x_center - max_range/2, x_center + max_range/2)
             ax.set_ylim(y_center - max_range/2, y_center + max_range/2)
+            
+            # Label special organisms with arrows
+            add_organism_labels(ax, umap_coords, fasta_accessions, fontsize=6)
             
             # Remove axis ticks and labels
             ax.set_xticks([])

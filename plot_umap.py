@@ -246,28 +246,32 @@ if __name__ == "__main__":
         with multiprocessing.Pool(processes=num_cores) as pool:
             results = pool.map(process_gene_data, gene_names)
         
-        # Calculate the figure size to ensure square subplots
-        n_rows = 2
-        n_cols = 4
-        subplot_size = 4  # Size of each subplot in inches
-        fig_width = subplot_size * n_cols
+        # Calculate the figure size for a 3x3 grid with wider aspect ratio
+        n_rows = 3
+        n_cols = 3
+        subplot_size = 5  # Increased from 4 to 5
+        subplot_aspect_ratio = 1.2  # Make plots wider (width = height * 1.2)
+        fig_width = subplot_size * n_cols * subplot_aspect_ratio
         fig_height = subplot_size * n_rows
         
-        # Create figure with square subplots
+        # Create figure with wider subplots
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height))
         axes = axes.ravel()
         
-        # Plot results with individual square dimensions
+        # Plot results with adjusted dimensions for the first 8 cells
         for idx, (gene_name, umap_coords, phyla, fasta_accessions) in enumerate(results):
+            if idx >= 8:  # Only plot in the first 8 cells
+                continue
+                
             ax = axes[idx]
             for phylum in PHYLUM_COLORS.keys():
                 if phylum in set(phyla):
                     mask = [p == phylum for p in phyla]
-                    ax.scatter(umap_coords[mask, 0], umap_coords[mask, 1],
-                             alpha=0.6,
+                    scatter = ax.scatter(umap_coords[mask, 0], umap_coords[mask, 1],
+                             alpha=0.7,  # Slightly increased alpha
                              label=phylum,
                              color=PHYLUM_COLORS[phylum],
-                             s=0.5,
+                             s=1.0,  # Doubled point size from 0.5 to 1.0
                              zorder=2)
             
             # Calculate the data limits for this subplot
@@ -280,15 +284,17 @@ if __name__ == "__main__":
             x_center = (x_max + x_min) / 2
             y_center = (y_max + y_min) / 2
             
-            # Use the larger range to make the plot square
-            max_range = max(x_range, y_range) * 1.1  # Add 10% padding
+            # Apply the aspect ratio to the plot limits
+            max_range = max(x_range, y_range) * 1.1  # 10% padding
+            x_half_range = max_range * subplot_aspect_ratio / 2
+            y_half_range = max_range / 2
             
-            # Set square limits centered on the data
-            ax.set_xlim(x_center - max_range/2, x_center + max_range/2)
-            ax.set_ylim(y_center - max_range/2, y_center + max_range/2)
+            # Set limits with appropriate aspect ratio
+            ax.set_xlim(x_center - x_half_range, x_center + x_half_range)
+            ax.set_ylim(y_center - y_half_range, y_center + y_half_range)
             
-            # Label special organisms with arrows
-            add_organism_labels(ax, umap_coords, fasta_accessions, fontsize=6)
+            # Label special organisms with arrows - use larger fontsize
+            add_organism_labels(ax, umap_coords, fasta_accessions, fontsize=12)
             
             # Remove axis ticks and labels
             ax.set_xticks([])
@@ -296,11 +302,52 @@ if __name__ == "__main__":
             ax.set_xticklabels([])
             ax.set_yticklabels([])
             
-            # Set title
-            ax.set_title(f'{gene_name}', fontsize=16, pad=5)
+            # Add a subtle grid for better readability
+            ax.grid(True, linestyle='--', alpha=0.2, zorder=0)
+            
+            # Set title with larger font
+            ax.set_title(f'{gene_name}', fontsize=18, pad=10, fontweight='bold')
         
-        # Adjust layout with enough spacing
-        plt.tight_layout()
+        # Create an attractive legend in the last (9th) cell
+        legend_ax = axes[8]
+        legend_ax.set_xticks([])
+        legend_ax.set_yticks([])
+        for spine in legend_ax.spines.values():
+            spine.set_visible(False)
+        
+        # Add a title to the legend subplot
+        legend_ax.text(0.5, 0.95, "Legend", fontsize=20, fontweight='bold', 
+                      ha='center', va='top', transform=legend_ax.transAxes)
+        
+        # Add phylum legend with larger markers
+        phylum_legend = []
+        for phylum, color in PHYLUM_COLORS.items():
+            phylum_legend.append(
+                plt.Line2D([0], [0], marker='o', color='w', 
+                          markerfacecolor=color, markersize=14, 
+                          label=phylum)
+            )
+        
+
+        # Add the phylum legend in the upper part
+        legend1 = legend_ax.legend(
+            handles=phylum_legend,
+            loc='upper center',
+            bbox_to_anchor=(0.5, 0.85),
+            fontsize=13,
+            title="Phylum",
+            title_fontsize=16,
+            frameon=True,
+            fancybox=True,
+            shadow=True
+        )
+        
+        
+        # Add the first legend back
+        legend_ax.add_artist(legend1)
+        
+        # Adjust layout with more space between subplots
+        plt.tight_layout(pad=2.5)
         
         if save_format == 'png':
             plt.savefig('/home/s233201/esm_runs/plots/embeddings_umap_all.png',

@@ -23,23 +23,23 @@ def get_mean_embedding(client, sequence, device):
     protein_tensor = client.encode(protein)
     logits_output = client.logits(
         protein_tensor, 
-        LogitsConfig(sequence=True, return_embeddings=True)
+        LogitsConfig(return_hidden_states=True, ith_hidden_layer=12)
     )
-    
     # Get embeddings and compute mean across sequence length
-    embeddings = logits_output.embeddings
+    embeddings = logits_output.hidden_states  # Shape: (1, seq_len, embed_dim)
     embeddings = embeddings.squeeze(0)  # Remove the 0th dimension
-    mean_embedding = embeddings.mean(dim=0)  # Average across sequence length
-    
+    #print(f"Embeddings shape: {embeddings.shape}")
+    mean_embedding = embeddings.mean(dim=1)  # Average across sequence length
+    #print(f"Mean embedding shape: {mean_embedding.shape}")
     return mean_embedding
 
 
 def main():
 
     model_name = 'esmc_600m'
-    fasta_path = '/home/s233201/esm_runs/inputs_new/LYS20.fasta'
+    fasta_path = '/home/s233201/esm_runs/inputs_new/LYS1.fasta'
     # Define separate output paths for embeddings and IDs
-    output_dir = Path('/home/s233201/esm_runs/embeddings_new')
+    output_dir = Path('/home/s233201/esm_runs/embeddings_new_12th')
     output_dir.mkdir(parents=True, exist_ok=True) # Ensure directory exists
     base_name = Path(fasta_path).stem # e.g., 'ARO8'
     embeddings_output_path = output_dir / f"{base_name}_embeddings.npy"
@@ -69,13 +69,12 @@ def main():
     ids_list = [] # List to store protein IDs
     for i, (protein_id, sequence) in tqdm(enumerate(sequences.items())):
         #print(f"Processing protein {i+1}/{len(sequences)}: {protein_id}")
-        try:
-            mean_embedding = get_mean_embedding(client, sequence, device)
-            embeddings_list.append(mean_embedding.cpu().detach().numpy())
-            ids_list.append(protein_id) # Store the ID
-            #print(f"Successfully processed {protein_id}, embedding shape: {mean_embedding.shape}")
-        except Exception as e:
-            print(f"Error processing {protein_id}: {e}")
+
+        mean_embedding = get_mean_embedding(client, sequence, device)
+        embeddings_list.append(mean_embedding.float().cpu().detach().numpy())
+        ids_list.append(protein_id) # Store the ID
+        #print(f"Successfully processed {protein_id}, embedding shape: {mean_embedding.shape}")
+
 
     # Convert list to numpy array and save embeddings
     embeddings_array = np.array(embeddings_list)

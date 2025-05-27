@@ -71,7 +71,7 @@ def plot_dms_datashader(dm1, dm2, dm1_name='dm1', dm2_name='dm2', gene_name='gen
     # Increase font sizes
     ax.set_xlabel(f'ESM-C distance', fontsize=20)
     ax.set_ylabel(f'Phylogenetic distance', fontsize=20)
-    ax.set_title(gene_name, fontsize=24)
+    ax.set_title(gene_name.upper(), fontsize=24)
     ax.tick_params(axis='both', which='major', labelsize=16)
     
     return agg.values.max()
@@ -149,8 +149,8 @@ if __name__ == '__main__':
     sm = plt.cm.ScalarMappable(cmap=fire_cmap, norm=norm)
     cax = fig.add_subplot(gs[:, -1])
     cbar = plt.colorbar(sm, cax=cax, label='Density')
-    cbar.ax.tick_params(labelsize=16)  # Increase colorbar tick font size
-    cbar.set_label('Density', size=20)  # Increase colorbar label font size
+    cbar.ax.tick_params(labelsize=18)  # Further increased colorbar tick font size
+    cbar.set_label('Density', size=22)  # Further increased colorbar label font size
     
     # Adjust layout and save
     plt.tight_layout()

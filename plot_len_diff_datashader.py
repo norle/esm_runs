@@ -7,8 +7,10 @@ from datashader.colors import colormap_select
 import colorcet as cc
 import os
 from scipy.spatial.distance import pdist, squareform
-from Bio import SeqIO # Added for FASTA parsing
-import concurrent.futures # Added for parallel processing
+from Bio import SeqIO
+import concurrent.futures
+from PIL import Image
+
 matplotlib.use('agg')
 
 def calculate_length_diff_matrix(fasta_file):
@@ -37,113 +39,69 @@ def calculate_length_diff_matrix(fasta_file):
     len_diff_df = pd.DataFrame(len_diff_matrix, index=ids, columns=ids)
     return len_diff_df
 
-def plot_dms_datashader(dm1, dm2, dm1_name='dm1', dm2_name='dm2', gene_name='gene', title_suffix='', ax=None, fig=None, output_dir=None, filename_base=None, max_points=None): # Added max_points parameter
-    """Plots two distance matrices against each other using datashader and saves individual plot."""
-    # Ensure 'accession' is a column initially
+def plot_dms_datashader(dm1: pd.DataFrame, dm2: pd.DataFrame, gene_name: str, max_points: int = None) -> tuple[Image.Image | None, float]:
+    """Generates a datashader image and max density for two distance matrices."""
     if 'accession' not in dm1.columns:
         dm1 = dm1.reset_index().rename(columns={'index': 'accession'})
     if 'accession' not in dm2.columns:
         dm2 = dm2.reset_index().rename(columns={'index': 'accession'})
 
-    # Set 'accession' as index for alignment (use drop=True, default)
     dm1 = dm1.set_index('accession')
     dm2 = dm2.set_index('accession')
 
-    print('Aligning dataframes...') 
-    # Find common accessions from the index
     common_accessions = dm1.index.intersection(dm2.index)
 
     if len(common_accessions) < 2:
-        print(f"Warning: Less than 2 common accessions for {gene_name}. Skipping plot.")
-        ax.text(0.5, 0.5, 'Not enough common data', horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
-        ax.set_title(f"{gene_name} {title_suffix}", fontsize=16)
-        return 0 # Return 0 density
+        print(f"Warning: Less than 2 common accessions for {gene_name}. Skipping image generation.")
+        return None, 0
 
-    # Reindex both dataframes (rows and columns) using the index
-    # Ensure common_accessions is sorted for consistent alignment if needed, though intersection usually handles it.
-    # common_accessions = sorted(list(common_accessions)) # Optional, usually not necessary
     dm1_aligned = dm1.loc[common_accessions, common_accessions]
     dm2_aligned = dm2.loc[common_accessions, common_accessions]
 
-    # Get numerical arrays and flatten upper triangle
-    # No need to drop 'accession' as it's the index now
     dm1_array = dm1_aligned.to_numpy()
     dm2_array = dm2_aligned.to_numpy()
     rows, cols = np.triu_indices(dm1_array.shape[0], k=1)
     dm1_flat = dm1_array[rows, cols]
     dm2_flat = dm2_array[rows, cols]
 
-    df = pd.DataFrame({
-        'x': dm1_flat,
-        'y': dm2_flat
-    })
+    df = pd.DataFrame({'x': dm1_flat, 'y': dm2_flat})
 
-    # --- Optional: Sample points for testing ---
     if max_points is not None and len(df) > max_points:
-        print(f"Sampling {max_points} points out of {len(df)} for plotting...")
-        df = df.sample(n=max_points, random_state=42) # Use a fixed random state for reproducibility if needed
+        df = df.sample(n=max_points, random_state=42)
 
     if df.empty:
-        print(f"Warning: No data points after alignment for {gene_name}. Skipping plot.")
-        ax.text(0.5, 0.5, 'No common data points', horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
-        ax.set_title(f"{gene_name} {title_suffix}", fontsize=16)
-        return 0
+        print(f"Warning: No data points after alignment/sampling for {gene_name}. Skipping image generation.")
+        return None, 0
 
-    print('Plotting...')
-    min_val_x = df['x'].min()
-    max_val_x = df['x'].max()
-    min_val_y = df['y'].min()
-    max_val_y = df['y'].max() # Moved this line up
+    min_val_x, max_val_x = df['x'].min(), df['x'].max()
+    min_val_y, max_val_y = df['y'].min(), df['y'].max()
 
-    # Avoid zero range
     if max_val_x == min_val_x: max_val_x += 1e-6
     if max_val_y == min_val_y: max_val_y += 1e-6
 
-    # --- Use fixed plot dimensions for a reasonable canvas size ---
     plot_width = 500
-    plot_height = 500 # Set height equal to width for a square canvas
+    plot_height = 500
 
     canvas = ds.Canvas(plot_width=plot_width, plot_height=plot_height,
                       x_range=(min_val_x, max_val_x),
                       y_range=(min_val_y, max_val_y))
-    print(len(df), 'points to plot...') # Added print statement
-    # Create density plot
     agg = canvas.points(df, 'x', 'y')
-    # Apply dynspread after shading to make points more visible at lower resolution
     img = ds.tf.shade(agg, cmap=cc.fire)
-    img = ds.tf.dynspread(img, threshold=0.5, max_px=5) # Added dynspread
+    img = ds.tf.dynspread(img, threshold=0.5, max_px=5)
     img = ds.tf.set_background(img, 'white')
-    print('Converting to matplotlib figure...')
-    # Convert to matplotlib figure. aspect='auto' makes the image fill the axes area.
-    # Explicitly set origin='lower' for consistency
-    # The extent ensures the axes labels match the data ranges
-    ax.imshow(img.to_pil(), extent=[min_val_x, max_val_x, min_val_y, max_val_y], aspect='auto', origin='lower')
-    # Force the axes *box* itself to be square
-    ax.set_aspect(1, adjustable='box')
 
-    # Save the individual datashader image if output_dir and filename_base are provided
-    # if output_dir and filename_base:
-    #     os.makedirs(output_dir, exist_ok=True)
-    #     img_filename = os.path.join(output_dir, f"{filename_base}.png")
-    #     try:
-    #         img.to_pil().save(img_filename)
-    #         print(f"Saved individual plot: {img_filename}")
-    #     except Exception as e:
-    #         print(f"Error saving individual plot {img_filename}: {e}")
+    pil_image = img.to_pil()
+    max_density = agg.values.max() if agg is not None else 0
 
-    # Increase font sizes
-    ax.set_xlabel(dm1_name, fontsize=14)
-    ax.set_ylabel(dm2_name, fontsize=14)
-    ax.set_title(f"{gene_name} {title_suffix}", fontsize=16)
-    ax.tick_params(axis='both', which='major', labelsize=12)
+    extent = [min_val_x, max_val_x, min_val_y, max_val_y]
+    pil_image.info['extent'] = extent
 
-    return agg.values.max() if agg is not None else 0
+    return pil_image, max_density
 
 def process_gene(gene):
     """Process a single gene: load ESM/Phylo DMs and calculate Length Diff DM."""
     print(f"Processing gene: {gene}")
 
-    # --- Load ESM embeddings distance matrix (dm1) ---
     embed_path = f'/home/s233201/esm_runs/embeddings_new/{gene.upper()}_embeddings.npy'
     ids_path = f'/home/s233201/esm_runs/embeddings_new/{gene.upper()}_ids.txt'
     dm1 = None
@@ -171,7 +129,6 @@ def process_gene(gene):
     except Exception as e:
         print(f"Error processing ESM data for {gene}: {e}")
 
-    # --- Load phylogenetic distance matrix (dm2) ---
     phylo_path = f'/home/s233201/full_dist_mats/new/full_mat_{gene.upper()}.csv'
     dm2 = None
     try:
@@ -184,8 +141,6 @@ def process_gene(gene):
     except Exception as e:
         print(f"Error processing Phylogenetic data for {gene}: {e}")
 
-
-    # --- Calculate length difference distance matrix (dm_len) ---
     fasta_path = f'/home/s233201/esm_runs/inputs_new/{gene.upper()}.fasta'
     dm_len_df = calculate_length_diff_matrix(fasta_path)
     dm_len = None
@@ -196,13 +151,35 @@ def process_gene(gene):
 
     return dm1, dm2, dm_len, gene
 
+def generate_plot_images(dm1, dm2, dm_len, gene, max_points):
+    """Generates PIL images and max densities for ESM vs Len and Phylo vs Len."""
+    print(f"Generating plot images for gene: {gene}...")
+    img1, dens1 = (None, 0)
+    if dm1 is not None and dm_len is not None:
+        try:
+            img1, dens1 = plot_dms_datashader(dm1.copy(), dm_len.copy(),
+                                            gene_name=f"{gene}_esm_vs_len",
+                                            max_points=max_points)
+        except Exception as e:
+            print(f"Error generating ESM vs Len image for {gene}: {e}")
+
+    img2, dens2 = (None, 0)
+    if dm2 is not None and dm_len is not None:
+        try:
+            img2, dens2 = plot_dms_datashader(dm2.copy(), dm_len.copy(),
+                                            gene_name=f"{gene}_phylo_vs_len",
+                                            max_points=max_points)
+        except Exception as e:
+            print(f"Error generating Phylo vs Len image for {gene}: {e}")
+
+    print(f"Finished image generation for gene: {gene}.")
+    return gene, img1, dens1, img2, dens2
+
 if __name__ == '__main__':
-    # --- Test Mode Configuration ---
-    test_mode = False # Set to False to run on all genes with full/more points
-    num_genes_to_test = 8 # Number of genes to process in test mode
-    max_points_for_testing = 1000 # Max points to plot per subplot in test mode
-    max_points_for_full_run = int(1e4) # Max points for the full run (or None for all)
-    # -----------------------------
+    test_mode = False
+    num_genes_to_test = 8
+    max_points_for_testing = 1000
+    max_points_for_full_run = None
 
     all_gene_names = ["lys20", "aco2", "lys4", "lys12", "aro8", "lys2", "lys9", "lys1"]
 
@@ -213,12 +190,11 @@ if __name__ == '__main__':
     else:
         print("--- RUNNING IN FULL MODE ---")
         gene_names = all_gene_names
-        test_max_points = max_points_for_full_run # Use the setting for full run
+        test_max_points = max_points_for_full_run
 
-    num_genes = len(gene_names) # Update num_genes based on mode
+    num_genes = len(gene_names)
 
-    # --- Parallel Data Processing ---
-    print("Starting parallel data processing...") # Added print statement
+    print("Starting parallel data processing...")
     all_results_dict = {}
     with concurrent.futures.ProcessPoolExecutor() as executor:
         future_to_gene = {executor.submit(process_gene, gene): gene for gene in gene_names}
@@ -229,141 +205,150 @@ if __name__ == '__main__':
                 all_results_dict[gene] = result
             except Exception as exc:
                 print(f'{gene} generated an exception: {exc}')
-                all_results_dict[gene] = (None, None, None, gene) # Store placeholder
-    print("Parallel data processing finished.") # Added print statement
+                all_results_dict[gene] = (None, None, None, gene)
+    print("Parallel data processing finished.")
 
-    # Order results according to the (potentially reduced) gene_names list
     all_results = [all_results_dict[gene] for gene in gene_names]
-    print("Data collected and ordered.") # Added print statement
+    print("Data collected and ordered.")
 
-    # --- Plotting Setup for Two Figures ---
-    # Adjust figsize for potentially taller square subplots (4 rows, 2 cols)
+    print("Starting parallel plot image generation...")
+    plot_results_dict = {}
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        future_to_gene = {}
+        for dm1, dm2, dm_len, gene in all_results:
+            future = executor.submit(generate_plot_images, dm1, dm2, dm_len, gene, test_max_points)
+            future_to_gene[future] = gene
+
+        for future in concurrent.futures.as_completed(future_to_gene):
+            gene = future_to_gene[future]
+            try:
+                plot_results_dict[gene] = future.result()
+            except Exception as exc:
+                print(f'{gene} generated an exception during image generation: {exc}')
+                plot_results_dict[gene] = (gene, None, 0, None, 0)
+    print("Parallel plot image generation finished.")
+
     rows_grid, cols_grid = 4, 2
-    # Try making figure taller to accommodate square plots + spacing
-    fig_width = 12 # Reduced width slightly
-    fig_height = 20 # Increased height significantly
+    fig_width = 12
+    fig_height = 20
     fig1, axes1 = plt.subplots(rows_grid, cols_grid, figsize=(fig_width, fig_height), squeeze=False)
-    # Adjust top margin for suptitle and vertical/horizontal spacing (hspace/wspace)
-    fig1.subplots_adjust(top=0.93, hspace=0.6, wspace=0.4) # Increased hspace
-    fig1.suptitle('ESM Distance vs Length Difference', fontsize=18) # Removed y=
+    fig1.subplots_adjust(top=0.93, hspace=0.6, wspace=0.4)
+    fig1.suptitle('ESM Distance vs Length Difference', fontsize=18)
 
     fig2, axes2 = plt.subplots(rows_grid, cols_grid, figsize=(fig_width, fig_height), squeeze=False)
-    fig2.subplots_adjust(top=0.93, hspace=0.6, wspace=0.4) # Increased hspace
-    fig2.suptitle('Phylogenetic Distance vs Length Difference', fontsize=18) # Removed y=
+    fig2.subplots_adjust(top=0.93, hspace=0.6, wspace=0.4)
+    fig2.suptitle('Phylogenetic Distance vs Length Difference', fontsize=18)
 
     max_density1 = 0
     max_density2 = 0
     fire_cmap = matplotlib.colors.LinearSegmentedColormap.from_list('fire', cc.fire)
 
-    # --- Plot all genes (potentially fewer in test mode) ---
-    print("Starting plot generation...")
-    output_dir = 'esm_runs/plots/len_diff_datashader' # Define output dir earlier
-    os.makedirs(output_dir, exist_ok=True) # Create it once
-    # test_max_points is now set based on test_mode above
+    print("Starting final plot assembly...")
+    output_dir = 'esm_runs/plots/len_diff_datashader'
+    os.makedirs(output_dir, exist_ok=True)
 
-    for idx, (dm1, dm2, dm_len, gene) in enumerate(all_results):
+    dm1_label = 'ESM Distance (Cosine)'
+    dm2_label_len = 'Length Difference'
+    dm1_label_phylo = 'Phylogenetic Distance'
+
+    for idx, gene in enumerate(gene_names):
         print(f"Plotting results for gene: {gene} ({idx+1}/{num_genes})...")
-        # Get axes for the current gene
         row = idx // cols_grid
         col = idx % cols_grid
-        # Check if indices are within bounds (important if grid size changes)
-        if row < rows_grid and col < cols_grid:
-             ax1 = axes1[row, col]
-             ax2 = axes2[row, col]
+
+        if row >= rows_grid or col >= cols_grid:
+             print(f"Warning: Index ({row}, {col}) out of bounds. Skipping plot assembly for {gene}.")
+             continue
+
+        ax1 = axes1[row, col]
+        ax2 = axes2[row, col]
+
+        _gene, pil_img1, dens1, pil_img2, dens2 = plot_results_dict.get(gene, (gene, None, 0, None, 0))
+
+        if pil_img1 is not None:
+            extent1 = pil_img1.info.get('extent', None)
+            if extent1:
+                 ax1.imshow(pil_img1, extent=extent1, aspect='auto', origin='upper')
+
+                 xmin, xmax, ymin, ymax = extent1
+                 
+                 # Fix ESM distance range to show only the actual data range
+                 # ESM distances are typically between 0 and 2 (cosine distance)
+                 if xmin < 0:
+                     # Use actual data range instead of centering with expanded limits
+                     ax1.set_xlim(0, xmax)
+                 else:
+                     ax1.set_xlim(xmin, xmax)
+                     
+                 ax1.set_ylim(ymin, ymax)
+
+                 ax1.set_xlabel(dm1_label, fontsize=14)
+                 ax1.set_ylabel(dm2_label_len, fontsize=14)
+                 ax1.tick_params(axis='both', which='major', labelsize=12)
+                 max_density1 = max(max_density1, dens1)
+            else:
+                 print(f"Warning: Extent missing for ESM vs Len image for {gene}")
+                 ax1.text(0.5, 0.5, 'Plotting Error', horizontalalignment='center', verticalalignment='center', transform=ax1.transAxes)
         else:
-             print(f"Warning: Index ({row}, {col}) out of bounds for grid ({rows_grid}x{cols_grid}). Skipping plot for {gene}.")
-             continue # Skip if grid is smaller than needed (shouldn't happen with fixed 4x2)
+            ax1.text(0.5, 0.5, 'Missing Data / Error', horizontalalignment='center', verticalalignment='center', transform=ax1.transAxes)
+        ax1.set_title(f"{gene}", fontsize=16)
 
-
-        # Plot 1: ESM vs Length Difference (on fig1)
-        max_val1 = 0
-        if dm1 is not None and dm_len is not None:
-            # plot_dms_datashader now sets aspect ratio correctly
-            max_val1 = plot_dms_datashader(dm1, dm_len,
-                                        dm1_name='ESM Distance (Cosine)',
-                                        dm2_name='Length Difference',
-                                        gene_name=gene,
-                                        title_suffix='',
-                                        ax=ax1, fig=fig1,
-                                        output_dir=output_dir, # Pass output dir
-                                        filename_base=f"{gene}_esm_vs_len", # Use f-string
-                                        max_points=test_max_points) # Pass max_points
-            ax1.set_title(f"{gene}", fontsize=16)
+        if pil_img2 is not None:
+            extent2 = pil_img2.info.get('extent', None)
+            if extent2:
+                 ax2.imshow(pil_img2, extent=extent2, aspect='auto', origin='upper')
+                 ax2.set_xlabel(dm1_label_phylo, fontsize=14)
+                 ax2.set_ylabel(dm2_label_len, fontsize=14)
+                 ax2.tick_params(axis='both', which='major', labelsize=12)
+                 max_density2 = max(max_density2, dens2)
+            else:
+                 print(f"Warning: Extent missing for Phylo vs Len image for {gene}")
+                 ax2.text(0.5, 0.5, 'Plotting Error', horizontalalignment='center', verticalalignment='center', transform=ax2.transAxes)
         else:
-            ax1.text(0.5, 0.5, 'Missing Data', horizontalalignment='center', verticalalignment='center', transform=ax1.transAxes)
-            ax1.set_title(f"{gene}", fontsize=16)
+            ax2.text(0.5, 0.5, 'Missing Data / Error', horizontalalignment='center', verticalalignment='center', transform=ax2.transAxes)
+        ax2.set_title(f"{gene}", fontsize=16)
 
-        # Plot 2: Phylo vs Length Difference (on fig2)
-        max_val2 = 0
-        if dm2 is not None and dm_len is not None:
-             max_val2 = plot_dms_datashader(dm2, dm_len,
-                                        dm1_name='Phylogenetic Distance',
-                                        dm2_name='Length Difference',
-                                        gene_name=gene,
-                                        title_suffix='',
-                                        ax=ax2, fig=fig2,
-                                        output_dir=output_dir, # Pass output dir
-                                        filename_base=f"{gene}_phylo_vs_len", # Use f-string
-                                        max_points=test_max_points) # Pass max_points
-             ax2.set_title(f"{gene}", fontsize=16)
-        else:
-            ax2.text(0.5, 0.5, 'Missing Data', horizontalalignment='center', verticalalignment='center', transform=ax2.transAxes)
-            ax2.set_title(f"{gene}", fontsize=16)
-
-        max_density1 = max(max_density1, max_val1)
-        max_density2 = max(max_density2, max_val2)
-
-    # Hide empty subplots if any
     total_plots_possible = rows_grid * cols_grid
-    for i in range(num_genes, total_plots_possible):  # Hide unused subplots
+    for i in range(num_genes, total_plots_possible):
         row = i // cols_grid
         col = i % cols_grid
         if row < rows_grid and col < cols_grid:
             axes1[row, col].set_visible(False)
             axes2[row, col].set_visible(False)
 
-    # --- Add Colorbars and Save Figures ---
-    # output_dir is already defined and created above
-
-    # Colorbar and saving for Figure 1 (ESM vs Length)
     print("Processing and saving Figure 1 (ESM vs Length)...")
     if max_density1 > 0:
         norm1 = matplotlib.colors.Normalize(vmin=0, vmax=max_density1)
         sm1 = plt.cm.ScalarMappable(cmap=fire_cmap, norm=norm1)
-        # Adjust layout considering the square aspect ratio and colorbar
-        # Need to leave space on the right for the colorbar
-        fig1.subplots_adjust(right=0.88, top=0.93, hspace=0.6, wspace=0.4) # Re-apply adjustments
-        cbar_ax1 = fig1.add_axes([0.9, 0.15, 0.02, 0.7]) # Adjust position/width if needed
+        fig1.subplots_adjust(right=0.88, top=0.93, hspace=0.6, wspace=0.4)
+        cbar_ax1 = fig1.add_axes([0.9, 0.15, 0.02, 0.7])
         cbar1 = fig1.colorbar(sm1, cax=cbar_ax1, label='Density')
         cbar1.ax.tick_params(labelsize=12)
         cbar1.set_label('Density', size=14)
     else:
         print("Warning: Max density is 0 for ESM vs Length plot, cannot create colorbar.")
-        # Use tight_layout carefully, might conflict with subplots_adjust
-        fig1.tight_layout(rect=[0, 0, 1, 0.93]) # Adjust rect to leave space for suptitle
+        fig1.tight_layout(rect=[0, 0, 1, 0.93])
 
-    plt.figure(fig1.number) # Ensure fig1 is the current figure for saving
+    plt.figure(fig1.number)
     plt.savefig(os.path.join(output_dir, 'esm_vs_len_comparison.png'),
                 dpi=300, bbox_inches='tight')
     plt.close(fig1)
     print(f"ESM vs Length plot saved to {output_dir}/esm_vs_len_comparison.png")
 
-    # Colorbar and saving for Figure 2 (Phylo vs Length)
-    print("Processing and saving Figure 2 (Phylo vs Length)...") # Added print statement
+    print("Processing and saving Figure 2 (Phylo vs Length)...")
     if max_density2 > 0:
         norm2 = matplotlib.colors.Normalize(vmin=0, vmax=max_density2)
         sm2 = plt.cm.ScalarMappable(cmap=fire_cmap, norm=norm2)
-        # Adjust layout considering the square aspect ratio and colorbar
-        fig2.subplots_adjust(right=0.88, top=0.93, hspace=0.6, wspace=0.4) # Re-apply adjustments
-        cbar_ax2 = fig2.add_axes([0.9, 0.15, 0.02, 0.7]) # Adjust position/width if needed
+        fig2.subplots_adjust(right=0.88, top=0.93, hspace=0.6, wspace=0.4)
+        cbar_ax2 = fig2.add_axes([0.9, 0.15, 0.02, 0.7])
         cbar2 = fig2.colorbar(sm2, cax=cbar_ax2, label='Density')
         cbar2.ax.tick_params(labelsize=12)
         cbar2.set_label('Density', size=14)
     else:
         print("Warning: Max density is 0 for Phylo vs Length plot, cannot create colorbar.")
-        fig2.tight_layout(rect=[0, 0, 1, 0.93]) # Adjust rect to leave space for suptitle
+        fig2.tight_layout(rect=[0, 0, 1, 0.93])
 
-    plt.figure(fig2.number) # Ensure fig2 is the current figure for saving
+    plt.figure(fig2.number)
     plt.savefig(os.path.join(output_dir, 'phylo_vs_len_comparison.png'),
                 dpi=300, bbox_inches='tight')
     plt.close(fig2)

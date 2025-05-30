@@ -160,8 +160,8 @@ def create_umap_plot(embeddings, protein_ids, output_dir, gene_name, phyla=None,
         # Remove axis ticks and labels
         ax.set_xticks([])
         ax.set_yticks([])
-        ax.set_xticklabels([])
-        ax.set_yticklabels([])
+        ax.set_xt_labels([])
+        ax.set_yt_labels([])
     else:
         ax.scatter(umap_coords[:, 0], umap_coords[:, 1], alpha=0.6, s=10)
     
@@ -211,12 +211,24 @@ def process_gene_data(gene_name):
     embedding_file = f'/home/s233201/esm_runs/embeddings_new/{gene_name}_embeddings.npy'
     taxa_file = '/home/s233201/esm_runs/inputs/taxa.csv'
     fasta_file = f'/home/s233201/esm_runs/inputs_new/{gene_name}.fasta'
+    umap_cache_file = f'/home/s233201/esm_runs/umap_cache/{gene_name}_umap.npz'
+    
+    # Create cache directory if it doesn't exist
+    os.makedirs('/home/s233201/esm_runs/umap_cache', exist_ok=True)
+    
+    print(f"Processing {gene_name}...")
     
     taxa_dict = load_taxa_info(taxa_file)
     fasta_accessions = get_fasta_accessions(fasta_file)
     phyla = [taxa_dict[acc] for acc in fasta_accessions]
     
-    print(f"Processing {gene_name}...")
+    # Try to load cached UMAP coordinates
+    if os.path.exists(umap_cache_file):
+        print(f"Loading cached UMAP coordinates for {gene_name}")
+        cached_data = np.load(umap_cache_file)
+        return gene_name, cached_data['umap_coords'], phyla, fasta_accessions
+    
+    # If no cache exists, proceed with normal processing
     embeddings, _ = load_embeddings(embedding_file)
     
     similarity_matrix = cosine_similarity(embeddings)
@@ -231,7 +243,12 @@ def process_gene_data(gene_name):
     )
     
     umap_coords = umap.fit_transform(distance_matrix)
-    return gene_name, umap_coords, phyla, fasta_accessions  # Return accessions too
+    
+    # Cache the results
+    np.savez(umap_cache_file, 
+             umap_coords=umap_coords)
+    
+    return gene_name, umap_coords, phyla, fasta_accessions
 
 if __name__ == "__main__":
     gene_names = ["LYS20", "ACO2", "LYS4", "LYS12", "ARO8", "LYS2", "LYS9", "LYS1"]
@@ -299,8 +316,8 @@ if __name__ == "__main__":
             # Remove axis ticks and labels
             ax.set_xticks([])
             ax.set_yticks([])
-            ax.set_xticklabels([])
-            ax.set_yticklabels([])
+            ax.set_xt_labels([])
+            ax.set_yt_labels([])
             
             # Add a subtle grid for better readability
             ax.grid(True, linestyle='--', alpha=0.2, zorder=0)

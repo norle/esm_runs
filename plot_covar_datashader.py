@@ -9,6 +9,7 @@ import os
 from functools import partial
 import multiprocessing as mp
 from scipy.spatial.distance import pdist, squareform
+import scipy.stats as stats  # Add at the top with other imports
 matplotlib.use('agg')
 
 def plot_dms_datashader(dm1, dm2, dm1_name='dm1', dm2_name='dm2', gene_name='gene', ax=None, fig=None):
@@ -42,6 +43,17 @@ def plot_dms_datashader(dm1, dm2, dm1_name='dm1', dm2_name='dm2', gene_name='gen
         'y': dm2_flat
     })
 
+    # Calculate correlation and p-value
+    correlation, p_value = stats.pearsonr(df['x'], df['y'])
+    
+    # Format p-value string
+    if p_value == 0.0:
+        p_value_str = "p < 1e-16"
+    elif p_value < 0.001:
+        p_value_str = f"p = {p_value:.2e}"
+    else:
+        p_value_str = f"p = {p_value:.3f}"
+
     min_val_x = df['x'].min()
     max_val_x = df['x'].max()
     min_val_y = df['y'].min()
@@ -73,6 +85,15 @@ def plot_dms_datashader(dm1, dm2, dm1_name='dm1', dm2_name='dm2', gene_name='gen
     ax.set_ylabel(f'Phylogenetic distance', fontsize=20)
     ax.set_title(gene_name.upper(), fontsize=24)
     ax.tick_params(axis='both', which='major', labelsize=16)
+    
+    # Add correlation text to plot
+    correlation_text = f"r = {correlation:.3f}\n{p_value_str}"
+    ax.text(0.95, 0.95, correlation_text,
+            transform=ax.transAxes,
+            horizontalalignment='right',
+            verticalalignment='top',
+            fontsize=16,
+            bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
     
     return agg.values.max()
 
@@ -128,11 +149,10 @@ if __name__ == '__main__':
     fig = plt.figure(figsize=(16, 24))  # Adjusted for 4x2 layout
     gs = plt.GridSpec(4, 3, width_ratios=[1, 1, 0.05], height_ratios=[1, 1, 1, 1])
     
-    # Process all genes first
-    all_results = []
-    for gene in gene_names:
-        result = process_gene(gene)
-        all_results.append(result)
+    # Use multiprocessing Pool to process genes in parallel
+    num_processes = mp.cpu_count()  # Use all available CPUs
+    with mp.Pool(processes=num_processes) as pool:
+        all_results = pool.map(process_gene, gene_names)
     
     # Plot all genes and track max density
     max_density = 0

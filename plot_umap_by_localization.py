@@ -62,48 +62,6 @@ def get_localizations(gene_name):
     df['Protein_ID'] = df['Protein_ID'].apply(lambda x: x.split()[0].split('.')[0])
     return dict(zip(df['Protein_ID'], df['Localizations']))
 
-def add_organism_labels(ax, umap_coords, accessions, fontsize=6):
-    """Add labels with lines pointing to special organisms."""
-    # Get axis limits to ensure labels stay within bounds
-    x_min, x_max = ax.get_xlim()
-    y_min, y_max = ax.get_ylim()
-    width = x_max - x_min
-    height = y_max - y_min
-    
-    for i, acc in enumerate(accessions):
-        base_acc = acc.split('.')[0]
-        if base_acc in SPECIAL_ORGANISMS:
-            x, y = umap_coords[i, 0], umap_coords[i, 1]
-            
-            # Calculate 45-degree offset with shorter lines
-            offset_dist = min(width, height) * 0.025  # Reduced from 0.1 to 0.025 (4x smaller)
-            offset_x = offset_dist
-            offset_y = offset_dist
-            
-            # Make sure label stays within axis limits
-            margin = min(width, height) * 0.05
-            label_x = min(max(x + offset_x, x_min + margin), x_max - margin)
-            label_y = min(max(y + offset_y, y_min + margin), y_max - margin)
-            
-            ax.annotate(
-                SPECIAL_ORGANISMS[base_acc],
-                xy=(x, y),
-                xytext=(label_x, label_y),
-                fontsize=fontsize,
-                color='black',
-                ha='left',
-                va='bottom',
-                arrowprops=dict(
-                    arrowstyle="-",
-                    connectionstyle="angle3,angleA=0,angleB=45",
-                    color='black',
-                    lw=1.0,  # Increased from 0.5 to 1.0 (2x bigger)
-                    alpha=0.7
-                ),
-                bbox=None,
-                zorder=5
-            )
-
 def process_gene_data(gene_name):
     """Process single gene and return UMAP coordinates with localizations."""
     embedding_file = f'/home/s233201/esm_runs/embeddings_new/{gene_name}_embeddings.npy'
@@ -131,11 +89,18 @@ def process_gene_data(gene_name):
     # If no cache exists, proceed with processing
     embeddings = load_embeddings(embedding_file)
     
+    # Check for minimum number of embeddings
+    if embeddings.shape[0] < 2:
+        print(f"Too few embeddings for {gene_name}")
+        return gene_name, None, None, None
+    
     similarity_matrix = cosine_similarity(embeddings)
     distance_matrix = 1 - similarity_matrix
     
+    # Adjust n_neighbors based on number of samples
     n_neighbors_val = min(100, embeddings.shape[0] - 1)
     if n_neighbors_val < 2:
+        print(f"Too few neighbors for {gene_name}")
         return gene_name, None, None, None
     
     umap_model = UMAP(
@@ -152,6 +117,63 @@ def process_gene_data(gene_name):
     np.savez(umap_cache_file, umap_coords=umap_coords)
     
     return gene_name, umap_coords, localizations, fasta_accessions
+
+def add_organism_labels(ax, umap_coords, accessions, fontsize=6):
+    """Add labels with lines pointing to special organisms."""
+    # Get axis limits to ensure labels stay within bounds
+    x_min, x_max = ax.get_xlim()
+    y_min, y_max = ax.get_ylim()
+    width = x_max - x_min
+    height = y_max - y_min
+    
+    # Reduced fontsize for labels
+    fontsize = fontsize * 0.8
+    
+    for i, acc in enumerate(accessions):
+        # Strip version number if present
+        base_acc = acc.split('.')[0]
+        if base_acc in SPECIAL_ORGANISMS:
+            # Get the coordinates for this organism
+            x, y = umap_coords[i, 0], umap_coords[i, 1]
+            
+            # Alternate between top and bottom placement
+            idx = list(SPECIAL_ORGANISMS.keys()).index(base_acc)
+            if idx % 2 == 0:
+                offset_dist = height * 0.1
+                offset_y = offset_dist
+                va_setting = 'bottom'
+            else:
+                offset_dist = -height * 0.1
+                offset_y = offset_dist
+                va_setting = 'top'
+            
+            # Keep x-coordinate the same for straight vertical lines
+            offset_x = 0
+            
+            # Make sure label stays within axis limits with margin
+            margin = min(width, height) * 0.05
+            label_x = x
+            label_y = min(max(y + offset_y, y_min + margin), y_max - margin)
+            
+            # Add a straight line pointing to the organism
+            ax.annotate(
+                SPECIAL_ORGANISMS[base_acc],
+                xy=(x, y),
+                xytext=(label_x, label_y),
+                fontsize=fontsize,
+                color='black',
+                ha='center',
+                va=va_setting,
+                arrowprops=dict(
+                    arrowstyle="-",
+                    connectionstyle="arc3,rad=0",
+                    color='black',
+                    lw=0.5,
+                    alpha=0.7
+                ),
+                bbox=None,
+                zorder=5
+            )
 
 def main_localization_plot():
     """Generate UMAP plots colored by protein localization."""

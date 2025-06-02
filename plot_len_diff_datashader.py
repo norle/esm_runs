@@ -10,8 +10,22 @@ from scipy.spatial.distance import pdist, squareform
 from Bio import SeqIO
 import concurrent.futures
 from PIL import Image
+from scipy.stats import pearsonr
 
 matplotlib.use('agg')
+
+def read_outlier_accessions(filepath):
+    """Reads outlier accessions from a file and returns a set."""
+    try:
+        with open(filepath, 'r') as f:
+            outliers = {line.strip() for line in f}
+        return outliers
+    except FileNotFoundError:
+        print(f"Error: Outlier file not found at {filepath}")
+        return set()
+    except Exception as e:
+        print(f"Error reading outlier file: {e}")
+        return set()
 
 def calculate_length_diff_matrix(fasta_file):
     """Calculates a distance matrix based on sequence length differences."""
@@ -53,7 +67,7 @@ def plot_dms_datashader(dm1: pd.DataFrame, dm2: pd.DataFrame, gene_name: str, ma
 
     if len(common_accessions) < 2:
         print(f"Warning: Less than 2 common accessions for {gene_name}. Skipping image generation.")
-        return None, 0
+        return None, 0, None, None
 
     dm1_aligned = dm1.loc[common_accessions, common_accessions]
     dm2_aligned = dm2.loc[common_accessions, common_accessions]
@@ -71,7 +85,7 @@ def plot_dms_datashader(dm1: pd.DataFrame, dm2: pd.DataFrame, gene_name: str, ma
 
     if df.empty:
         print(f"Warning: No data points after alignment/sampling for {gene_name}. Skipping image generation.")
-        return None, 0
+        return None, 0, None, None
 
     min_val_x, max_val_x = df['x'].min(), df['x'].max()
     min_val_y, max_val_y = df['y'].min(), df['y'].max()
@@ -96,11 +110,18 @@ def plot_dms_datashader(dm1: pd.DataFrame, dm2: pd.DataFrame, gene_name: str, ma
     extent = [min_val_x, max_val_x, min_val_y, max_val_y]
     pil_image.info['extent'] = extent
 
-    return pil_image, max_density
+    # Calculate Pearson correlation and p-value
+    r, p = pearsonr(df['x'], df['y'])
+
+    return pil_image, max_density, r, p
 
 def process_gene(gene):
     """Process a single gene: load ESM/Phylo DMs and calculate Length Diff DM."""
     print(f"Processing gene: {gene}")
+
+    # Read outlier accessions
+    outlier_file = '/home/s233201/outliers_set.txt'
+    outlier_accessions = read_outlier_accessions(outlier_file)
 
     embed_path = f'/home/s233201/esm_runs/embeddings_new/{gene.upper()}_embeddings.npy'
     ids_path = f'/home/s233201/esm_runs/embeddings_new/{gene.upper()}_ids.txt'
@@ -117,6 +138,10 @@ def process_gene(gene):
         if len(embed_accessions) != embed.shape[0]:
              raise ValueError(f"Number of IDs ({len(embed_accessions)}) does not match number of embeddings ({embed.shape[0]}) for {gene}")
 
+        # Filter out outlier accessions for ESM
+        embed_accessions = [acc for acc in embed_accessions if acc not in outlier_accessions]
+        embed = embed[:len(embed_accessions)]  # Trim embeddings to match filtered accessions
+
         embed_df = pd.DataFrame(embed, index=embed_accessions)
         embed_dist = pd.DataFrame(
             squareform(pdist(embed_df.values, metric='cosine')),
@@ -129,12 +154,17 @@ def process_gene(gene):
     except Exception as e:
         print(f"Error processing ESM data for {gene}: {e}")
 
-    phylo_path = f'/home/s233201/full_dist_mats/new/full_mat_{gene.upper()}.csv'
+    phylo_path = f'/home/s233201/full_dist_mats/clean/full_mat_{gene.upper()}.csv'
     dm2 = None
     try:
         phylo_raw = pd.read_csv(phylo_path, sep='\s+', header=None, skiprows=1)
         phylo_accessions = phylo_raw.iloc[:, 0].values
+
+        # Filter out outlier accessions for Phylo
+        phylo_accessions = [acc for acc in phylo_accessions if acc not in outlier_accessions]
+        phylo_raw = phylo_raw[phylo_raw.iloc[:, 0].isin(phylo_accessions)]
         phylo = pd.DataFrame(phylo_raw.iloc[:, 1:].values, index=phylo_accessions, columns=phylo_accessions)
+
         dm2 = phylo.reset_index().rename(columns={'index': 'accession'})
     except FileNotFoundError:
         print(f"Error: Phylogenetic distance matrix file not found for {gene}")
@@ -154,26 +184,26 @@ def process_gene(gene):
 def generate_plot_images(dm1, dm2, dm_len, gene, max_points):
     """Generates PIL images and max densities for ESM vs Len and Phylo vs Len."""
     print(f"Generating plot images for gene: {gene}...")
-    img1, dens1 = (None, 0)
+    img1, dens1, r1, p1 = (None, 0, None, None)
     if dm1 is not None and dm_len is not None:
         try:
-            img1, dens1 = plot_dms_datashader(dm1.copy(), dm_len.copy(),
+            img1, dens1, r1, p1 = plot_dms_datashader(dm1.copy(), dm_len.copy(),
                                             gene_name=f"{gene}_esm_vs_len",
                                             max_points=max_points)
         except Exception as e:
             print(f"Error generating ESM vs Len image for {gene}: {e}")
 
-    img2, dens2 = (None, 0)
+    img2, dens2, r2, p2 = (None, 0, None, None)
     if dm2 is not None and dm_len is not None:
         try:
-            img2, dens2 = plot_dms_datashader(dm2.copy(), dm_len.copy(),
+            img2, dens2, r2, p2 = plot_dms_datashader(dm2.copy(), dm_len.copy(),
                                             gene_name=f"{gene}_phylo_vs_len",
                                             max_points=max_points)
         except Exception as e:
             print(f"Error generating Phylo vs Len image for {gene}: {e}")
 
     print(f"Finished image generation for gene: {gene}.")
-    return gene, img1, dens1, img2, dens2
+    return gene, img1, dens1, r1, p1, img2, dens2, r2, p2
 
 if __name__ == '__main__':
     test_mode = False
@@ -225,12 +255,22 @@ if __name__ == '__main__':
                 plot_results_dict[gene] = future.result()
             except Exception as exc:
                 print(f'{gene} generated an exception during image generation: {exc}')
-                plot_results_dict[gene] = (gene, None, 0, None, 0)
+                plot_results_dict[gene] = (gene, None, 0, None, None, None, 0, None, None)
     print("Parallel plot image generation finished.")
+
+    print("Starting final plot assembly...")
+    output_dir = 'esm_runs/plots/len_diff_datashader'
+    os.makedirs(output_dir, exist_ok=True)
+
+    dm1_label = 'ESM Distance (Cosine)'
+    dm2_label_len = 'Length Difference'
+    dm1_label_phylo = 'Phylogenetic Distance'
 
     rows_grid, cols_grid = 4, 2
     fig_width = 12
     fig_height = 20
+
+    # Create separate figures for ESM vs Len and Phylo vs Len
     fig1, axes1 = plt.subplots(rows_grid, cols_grid, figsize=(fig_width, fig_height), squeeze=False)
     fig1.subplots_adjust(top=0.93, hspace=0.6, wspace=0.4)
     fig1.suptitle('ESM Distance vs Length Difference', fontsize=18)
@@ -243,79 +283,96 @@ if __name__ == '__main__':
     max_density2 = 0
     fire_cmap = matplotlib.colors.LinearSegmentedColormap.from_list('fire', cc.fire)
 
-    print("Starting final plot assembly...")
-    output_dir = 'esm_runs/plots/len_diff_datashader'
-    os.makedirs(output_dir, exist_ok=True)
-
-    dm1_label = 'ESM Distance (Cosine)'
-    dm2_label_len = 'Length Difference'
-    dm1_label_phylo = 'Phylogenetic Distance'
-
+    # Populate the ESM vs Len subplots
     for idx, gene in enumerate(gene_names):
-        print(f"Plotting results for gene: {gene} ({idx+1}/{num_genes})...")
+        print(f"Plotting ESM vs Len for gene: {gene} ({idx+1}/{num_genes})...")
         row = idx // cols_grid
         col = idx % cols_grid
 
         if row >= rows_grid or col >= cols_grid:
-             print(f"Warning: Index ({row}, {col}) out of bounds. Skipping plot assembly for {gene}.")
-             continue
+            print(f"Warning: Index ({row}, {col}) out of bounds. Skipping plot assembly for {gene}.")
+            continue
 
         ax1 = axes1[row, col]
-        ax2 = axes2[row, col]
-
-        _gene, pil_img1, dens1, pil_img2, dens2 = plot_results_dict.get(gene, (gene, None, 0, None, 0))
+        _gene, pil_img1, dens1, r1, p1, pil_img2, dens2, r2, p2 = plot_results_dict.get(gene, (gene, None, 0, None, None, None, 0, None, None))
 
         if pil_img1 is not None:
             extent1 = pil_img1.info.get('extent', None)
             if extent1:
-                 ax1.imshow(pil_img1, extent=extent1, aspect='auto', origin='upper')
+                ax1.imshow(pil_img1, extent=extent1, aspect='auto', origin='upper')
 
-                 xmin, xmax, ymin, ymax = extent1
-                 
-                 # Fix ESM distance range to show only the actual data range
-                 # ESM distances are typically between 0 and 2 (cosine distance)
-                 if xmin < 0:
-                     # Use actual data range instead of centering with expanded limits
-                     ax1.set_xlim(0, xmax)
-                 else:
-                     ax1.set_xlim(xmin, xmax)
-                     
-                 ax1.set_ylim(ymin, ymax)
+                xmin, xmax, ymin, ymax = extent1
 
-                 ax1.set_xlabel(dm1_label, fontsize=14)
-                 ax1.set_ylabel(dm2_label_len, fontsize=14)
-                 ax1.tick_params(axis='both', which='major', labelsize=12)
-                 max_density1 = max(max_density1, dens1)
+                # Fix ESM distance range to show only the actual data range
+                # ESM distances are typically between 0 and 2 (cosine distance)
+                if xmin < 0:
+                    # Use actual data range instead of centering with expanded limits
+                    ax1.set_xlim(0, xmax)
+                else:
+                    ax1.set_xlim(xmin, xmax)
+
+                ax1.set_ylim(ymin, ymax)
+
+                ax1.set_xlabel(dm1_label, fontsize=14)
+                ax1.set_ylabel(dm2_label_len, fontsize=14)
+                ax1.tick_params(axis='both', which='major', labelsize=12)
+                max_density1 = max(max_density1, dens1)
+
+                # Add Pearson correlation and p-value to the top right
+                r_str = f"{r1:.2f}" if r1 is not None else "N/A"
+                p_str = f"{p1:.2e}" if p1 is not None and p1 > 0.0 else "<1e-16" if p1 is not None else "N/A"
+                ax1.text(0.95, 0.95, f"r={r_str}\np={p_str}", transform=ax1.transAxes,
+                        fontsize=10, verticalalignment='top', horizontalalignment='right',
+                        bbox=dict(facecolor='white', alpha=0.7))
             else:
-                 print(f"Warning: Extent missing for ESM vs Len image for {gene}")
-                 ax1.text(0.5, 0.5, 'Plotting Error', horizontalalignment='center', verticalalignment='center', transform=ax1.transAxes)
+                print(f"Warning: Extent missing for ESM vs Len image for {gene}")
+                ax1.text(0.5, 0.5, 'Plotting Error', horizontalalignment='center', verticalalignment='center', transform=ax1.transAxes)
         else:
             ax1.text(0.5, 0.5, 'Missing Data / Error', horizontalalignment='center', verticalalignment='center', transform=ax1.transAxes)
         ax1.set_title(f"{gene}", fontsize=16)
 
+    # Populate the Phylo vs Len subplots
+    for idx, gene in enumerate(gene_names):
+        print(f"Plotting Phylo vs Len for gene: {gene} ({idx+1}/{num_genes})...")
+        row = idx // cols_grid
+        col = idx % cols_grid
+
+        if row >= rows_grid or col >= cols_grid:
+            print(f"Warning: Index ({row}, {col}) out of bounds. Skipping plot assembly for {gene}.")
+            continue
+
+        ax2 = axes2[row, col]
+        _gene, pil_img1, dens1, r1, p1, pil_img2, dens2, r2, p2 = plot_results_dict.get(gene, (gene, None, 0, None, None, None, 0, None, None))
+
         if pil_img2 is not None:
             extent2 = pil_img2.info.get('extent', None)
             if extent2:
-                 ax2.imshow(pil_img2, extent=extent2, aspect='auto', origin='upper')
-                 ax2.set_xlabel(dm1_label_phylo, fontsize=14)
-                 ax2.set_ylabel(dm2_label_len, fontsize=14)
-                 ax2.tick_params(axis='both', which='major', labelsize=12)
-                 max_density2 = max(max_density2, dens2)
+                ax2.imshow(pil_img2, extent=extent2, aspect='auto', origin='upper')
+                ax2.set_xlabel(dm1_label_phylo, fontsize=14)
+                ax2.set_ylabel(dm2_label_len, fontsize=14)
+                ax2.tick_params(axis='both', which='major', labelsize=12)
+                max_density2 = max(max_density2, dens2)
+
+                # Add Pearson correlation and p-value to the top right
+                r_str = f"{r2:.2f}" if r2 is not None else "N/A"
+                p_str = f"{p2:.2e}" if p2 is not None and  p2 > 0.0 else "<1e-16" if p2 is not None else "N/A"
+                ax2.text(0.95, 0.95, f"r={r_str}\np={p_str}", transform=ax2.transAxes,
+                        fontsize=10, verticalalignment='top', horizontalalignment='right',
+                        bbox=dict(facecolor='white', alpha=0.7))
             else:
-                 print(f"Warning: Extent missing for Phylo vs Len image for {gene}")
-                 ax2.text(0.5, 0.5, 'Plotting Error', horizontalalignment='center', verticalalignment='center', transform=ax2.transAxes)
+                print(f"Warning: Extent missing for Phylo vs Len image for {gene}")
+                ax2.text(0.5, 0.5, 'Plotting Error', horizontalalignment='center', verticalalignment='center', transform=ax2.transAxes)
         else:
             ax2.text(0.5, 0.5, 'Missing Data / Error', horizontalalignment='center', verticalalignment='center', transform=ax2.transAxes)
         ax2.set_title(f"{gene}", fontsize=16)
 
-    total_plots_possible = rows_grid * cols_grid
-    for i in range(num_genes, total_plots_possible):
-        row = i // cols_grid
-        col = i % cols_grid
-        if row < rows_grid and col < cols_grid:
-            axes1[row, col].set_visible(False)
-            axes2[row, col].set_visible(False)
+    # Remove any unused subplots
+    for i in range(num_genes, rows_grid):
+        for j in range(cols_grid):
+            axes1[i, j].set_visible(False)
+            axes2[i, j].set_visible(False)
 
+    # Add colorbars to Figure 1 (ESM vs Len)
     print("Processing and saving Figure 1 (ESM vs Length)...")
     if max_density1 > 0:
         norm1 = matplotlib.colors.Normalize(vmin=0, vmax=max_density1)
@@ -335,6 +392,7 @@ if __name__ == '__main__':
     plt.close(fig1)
     print(f"ESM vs Length plot saved to {output_dir}/esm_vs_len_comparison.png")
 
+    # Add colorbars to Figure 2 (Phylo vs Len)
     print("Processing and saving Figure 2 (Phylo vs Length)...")
     if max_density2 > 0:
         norm2 = matplotlib.colors.Normalize(vmin=0, vmax=max_density2)

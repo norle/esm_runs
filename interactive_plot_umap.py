@@ -22,6 +22,15 @@ PHYLUM_COLORS = {
     'Cryptomycota': '#a65628'   # Brown
 }
 
+special_organisms = {
+    "GCF_000146045": "Saccharomyces cerevisiae",
+    "GCA_000230395": "Aspergillus niger",
+    "GCF_000002655": "Aspergillus fumigatus",
+    "GCF_000182895": "Coprinopsis cinerea",
+    "GCF_000149305": "Rhizopus delemar",
+    "GCF_028827035": "Penicillium chrysogenum"
+}
+
 def load_embeddings(embedding_file):
     """Load embeddings from saved numpy file."""
     embeddings = np.load(embedding_file)
@@ -61,11 +70,20 @@ def process_gene_data_interactive(gene_name):
     filtered_accessions = [acc for acc in fasta_accessions if acc in taxa_dict]
     phyla = [taxa_dict[acc] for acc in filtered_accessions]
     
-    # Try to load cached UMAP coordinates
+    # Try to load cached UMAP coordinates with error handling
     if os.path.exists(umap_cache_file):
         print(f"Loading cached UMAP coordinates for {gene_name}")
-        cached_data = np.load(umap_cache_file)
-        return gene_name, cached_data['umap_coords'], cached_data['phyla'], cached_data['accessions']
+        try:
+            cached_data = np.load(umap_cache_file)
+            if all(key in cached_data for key in ['umap_coords', 'phyla', 'accessions']):
+                return gene_name, cached_data['umap_coords'], cached_data['phyla'], cached_data['accessions']
+            else:
+                print(f"Cache file for {gene_name} is missing required data. Recomputing...")
+                os.remove(umap_cache_file)  # Remove incomplete cache file
+        except Exception as e:
+            print(f"Error loading cache for {gene_name}: {e}. Recomputing...")
+            if os.path.exists(umap_cache_file):
+                os.remove(umap_cache_file)
     
     # If no cache exists, proceed with normal processing
     embeddings_all = load_embeddings(embedding_file)
@@ -111,11 +129,16 @@ def process_gene_data_interactive(gene_name):
     
     umap_coords = umap_model.fit_transform(distance_matrix)
     
-    # Cache the results
-    np.savez(umap_cache_file, 
-             umap_coords=umap_coords,
-             phyla=phyla,
-             accessions=filtered_accessions)
+    # Cache the results with all required fields
+    try:
+        np.savez(umap_cache_file, 
+                 umap_coords=umap_coords,
+                 phyla=np.array(phyla, dtype=str),  # Convert lists to numpy arrays
+                 accessions=np.array(filtered_accessions, dtype=str))
+    except Exception as e:
+        print(f"Warning: Failed to cache results for {gene_name}: {e}")
+        if os.path.exists(umap_cache_file):
+            os.remove(umap_cache_file)
     
     return gene_name, umap_coords, phyla, filtered_accessions
 
@@ -138,7 +161,7 @@ def main_interactive_bokeh(gene_names, output_html_file):
     plots = []
     tools = "pan,box_zoom,wheel_zoom,reset,save"
     
-    # Create a figure for the shared legend
+    # Create and style the legend figure as before
     legend_fig = figure(width=200, height=350, title="Phyla", frame_width=200, frame_height=350)
     legend_fig.axis.visible = False
     legend_fig.grid.visible = False
@@ -180,10 +203,30 @@ def main_interactive_bokeh(gene_names, output_html_file):
         hover = HoverTool(tooltips=[("Accession", "@accession"), ("Phylum", "@phylum")])
         p.add_tools(hover)
         
-        # Calculate plot bounds for better label positioning
-        x_range = np.ptp(umap_coords[:, 0])
-        y_range = np.ptp(umap_coords[:, 1])
-        scale_factor = min(x_range, y_range) * 0.1  # 10% of the smaller range
+        # Calculate data limits for aspect ratio adjustment
+        x_min, x_max = np.min(umap_coords[:, 0]), np.max(umap_coords[:, 0])
+        y_min, y_max = np.min(umap_coords[:, 1]), np.max(umap_coords[:, 1])
+        
+        # Calculate ranges and centers
+        x_range = x_max - x_min
+        y_range = y_max - y_min
+        x_center = (x_max + x_min) / 2
+        y_center = (y_max + y_min) / 2
+        
+        # Apply consistent aspect ratio (1.2 as in plot_umap.py)
+        max_range = max(x_range, y_range) * 1.1  # 10% padding
+        aspect_ratio = 1.2
+        x_half_range = max_range * aspect_ratio / 2
+        y_half_range = max_range / 2
+        
+        # Set plot ranges with appropriate aspect ratio
+        p.x_range.start = x_center - x_half_range
+        p.x_range.end = x_center + x_half_range
+        p.y_range.start = y_center - y_half_range
+        p.y_range.end = y_center + y_half_range
+        
+        # Calculate scale factor for labels based on the adjusted ranges
+        scale_factor = min(x_half_range, y_half_range) * 0.1
         
         for phylum in PHYLUM_COLORS.keys():
             mask = [p == phylum for p in phyla_list]
@@ -201,43 +244,37 @@ def main_interactive_bokeh(gene_names, output_html_file):
                 p.scatter('x', 'y', 
                         source=source,
                         color=PHYLUM_COLORS[phylum],
-                        size=1,
+                        size=2,  # Slightly larger point size
                         marker='circle',
                         alpha=0.7)
         
         # Special organisms annotations with improved positioning
-        special_organisms = {
-            "GCF_000146045": "S. cerevisiae",
-            "GCA_000230395": "A. niger",
-            "GCF_000002655": "A. fumigatus",
-            "GCF_000182895": "C. cinerea",
-            "GCF_000149305": "R. delemar",
-            "GCF_028827035": "P. chrysogenum"
-        }
-        
-        accessions_list = list(accessions_list)
         for acc in special_organisms:
             if acc in accessions_list:
                 idx = accessions_list.index(acc)
                 x_pos = umap_coords[idx, 0]
                 y_pos = umap_coords[idx, 1]
                 
-                # Add connecting line with fixed diagonal direction
-                offset_x = scale_factor * 0.4
-                offset_y = scale_factor * 0.4
+                # Add connecting line with consistent offset
+                offset_x = scale_factor * 0.5
+                offset_y = scale_factor * 0.5
+                
+                # Alternate label positions for better distribution
+                if list(special_organisms.keys()).index(acc) % 2 == 0:
+                    offset_y *= -1  # Place label below for even indices
+                
                 p.segment(x0=x_pos, y0=y_pos, 
                          x1=x_pos + offset_x, 
                          y1=y_pos + offset_y,
                          color='gray',
                          line_width=0.5)
                 
-                # Add text label in top-right position
                 p.text(x_pos + offset_x, 
                       y_pos + offset_y,
                       text=[special_organisms[acc]],
                       text_font_size='8pt',
                       text_align='left',
-                      text_baseline='bottom')
+                      text_baseline='middle')
         
         plots.append(p)
     

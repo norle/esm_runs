@@ -21,6 +21,15 @@ PHYLUM_COLORS = {
     'Cryptomycota': '#a65628'      # Brown
 }
 
+# # Add special organisms for labeling
+# SPECIAL_ORGANISMS = {
+#     "GCF_000146045.2": "Saccharomyces cerevisiae",
+#     "GCA_000230395.2": "Aspergillus niger",
+#     "GCF_000002655.1": "Aspergillus fumigatus",
+#     "GCF_000182895.1": "Coprinopsis cinerea",
+#     "GCF_000149305.1": "Rhizopus delemar",
+#     "GCF_028827035.1": "Penicillium chrysogenum"
+# }
 # Add special organisms for labeling
 SPECIAL_ORGANISMS = {
     "GCF_000146045": "Saccharomyces cerevisiae",
@@ -160,8 +169,8 @@ def create_umap_plot(embeddings, protein_ids, output_dir, gene_name, phyla=None,
         # Remove axis ticks and labels
         ax.set_xticks([])
         ax.set_yticks([])
-        ax.set_xt_labels([])
-        ax.set_yt_labels([])
+        ax.set_xticklabels([])
+        ax.set_yticklabels([])
     else:
         ax.scatter(umap_coords[:, 0], umap_coords[:, 1], alpha=0.6, s=10)
     
@@ -316,8 +325,8 @@ if __name__ == "__main__":
             # Remove axis ticks and labels
             ax.set_xticks([])
             ax.set_yticks([])
-            ax.set_xt_labels([])
-            ax.set_yt_labels([])
+            ax.set_xticklabels([])
+            ax.set_yticklabels([])
             
             # Add a subtle grid for better readability
             ax.grid(True, linestyle='--', alpha=0.2, zorder=0)

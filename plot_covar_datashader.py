@@ -107,7 +107,7 @@ def process_gene(gene):
         embed = embed.reshape(-1, 1)
 
     # Load phylogenetic distance matrix
-    phylo_raw = pd.read_csv(f'/home/s233201/full_dist_mats/new/full_mat_{gene.upper()}.csv',
+    phylo_raw = pd.read_csv(f'/home/s233201/full_dist_mats/clean/full_mat_{gene.upper()}.csv',
                        sep='\s+', header=None, skiprows=1)
 
     # Get accessions from phylo matrix and set as index/columns

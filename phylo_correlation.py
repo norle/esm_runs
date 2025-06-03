@@ -5,26 +5,31 @@ import seaborn as sns
 import os
 from scipy.stats import pearsonr
 import concurrent.futures
+import gc
 
-def load_phylo_matrices(gene_names, phylo_path='/home/s233201/full_dist_mats/fast/'):
+def load_phylo_matrices(gene_names, phylo_path='/home/s233201/full_dist_mats/clean/'):
     """Loads phylogenetic distance matrices for specified genes."""
+    print(f"\nStarting to load {len(gene_names)} phylogenetic matrices...")
     phylo_matrices = {}
-    for gene in gene_names:
-        print(f"Loading phylogenetic distance matrix for {gene}...")
+    for i, gene in enumerate(gene_names, 1):
+        print(f"[{i}/{len(gene_names)}] Loading phylogenetic distance matrix for {gene}...")
         phylo_path_gene = os.path.join(phylo_path, f'full_mat_{gene.upper()}.csv')
         try:
+            print(f"  - Reading CSV file for {gene}...")
             phylo_raw = pd.read_csv(phylo_path_gene, header=None, skiprows=1, engine='pyarrow')
-            # Split the single column by whitespace
+            print(f"  - Processing data for {gene}...")
             phylo_split = phylo_raw[0].str.split(expand=True)
             phylo_accessions = phylo_split.iloc[:, 0].values
             phylo = pd.DataFrame(phylo_split.iloc[:, 1:].values, index=phylo_accessions, columns=phylo_accessions)
             phylo_matrices[gene] = phylo
+            print(f"  ✓ Successfully loaded matrix for {gene} ({len(phylo_accessions)} accessions)")
         except FileNotFoundError:
-            print(f"Error: Phylogenetic distance matrix file not found for {gene}")
+            print(f"  ✗ Error: Phylogenetic distance matrix file not found for {gene}")
             return None
         except Exception as e:
-            print(f"Error processing Phylogenetic data for {gene}: {e}")
+            print(f"  ✗ Error processing Phylogenetic data for {gene}: {e}")
             return None
+    print(f"\n✓ Successfully loaded all {len(gene_names)} phylogenetic matrices")
     return phylo_matrices
 
 def calculate_single_correlation(args):
@@ -38,6 +43,10 @@ def calculate_single_correlation(args):
 
     mat1_aligned = mat1.loc[common_accessions, common_accessions]
     mat2_aligned = mat2.loc[common_accessions, common_accessions]
+
+    # Convert matrices to float64 before extracting values
+    mat1_aligned = mat1_aligned.astype(np.float64)
+    mat2_aligned = mat2_aligned.astype(np.float64)
 
     # Extract upper triangle (excluding diagonal)
     rows, cols = np.triu_indices(mat1_aligned.shape[0], k=1)
@@ -66,16 +75,27 @@ def calculate_correlation_matrix(phylo_matrices, method='pearson'):
             gene1, gene2 = gene_names[i], gene_names[j]
             tasks.append((i, j, phylo_matrices[gene1], phylo_matrices[gene2], gene1, gene2, method))
 
-    # Process tasks in parallel
-    with concurrent.futures.ProcessPoolExecutor(max_workers=32) as executor:
-        results = executor.map(calculate_single_correlation, tasks)
-
-        # Process results
-        for i, j, (r, p) in results:
-            correlation_matrix[i, j] = r
-            correlation_matrix[j, i] = r
-            p_value_matrix[i, j] = p
-            p_value_matrix[j, i] = p
+    # Split tasks into 8 chunks
+    num_workers = 8
+    chunk_size = (len(tasks) + num_workers - 1) // num_workers
+    task_chunks = [tasks[i:i + chunk_size] for i in range(0, len(tasks), chunk_size)]
+    
+    print(f"Processing {len(tasks)} tasks in {len(task_chunks)} chunks using {num_workers} workers")
+    
+    # Process chunks in parallel
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+        for chunk in task_chunks:
+            chunk_results = list(executor.map(calculate_single_correlation, chunk))
+            
+            # Process chunk results
+            for i, j, (r, p) in chunk_results:
+                correlation_matrix[i, j] = r
+                correlation_matrix[j, i] = r
+                p_value_matrix[i, j] = p
+                p_value_matrix[j, i] = p
+            
+            # Force garbage collection after each chunk
+            gc.collect()
 
     correlation_df = pd.DataFrame(correlation_matrix, index=gene_names, columns=gene_names)
     p_value_df = pd.DataFrame(p_value_matrix, index=gene_names, columns=gene_names)

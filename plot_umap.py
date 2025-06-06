@@ -8,7 +8,8 @@ import os
 import pandas as pd
 from Bio import SeqIO
 import multiprocessing
-import pickle  # Add at top with other imports
+import pickle
+from adjustText import adjust_text  # Add this import
 
 # Define phylum colors using ColorBrewer
 PHYLUM_COLORS = {
@@ -18,7 +19,7 @@ PHYLUM_COLORS = {
     'Zoopagomycota': '#984ea3',    # Purple
     'Chytridiomycota': '#ff7f00',  # Orange
     'Blastocladiomycota': '#ffff33',# Yellow
-    'Cryptomycota': '#a65628'      # Brown
+    #'Cryptomycota': '#a65628'      # Brown
 }
 
 # # Add special organisms for labeling
@@ -32,12 +33,12 @@ PHYLUM_COLORS = {
 # }
 # Add special organisms for labeling
 SPECIAL_ORGANISMS = {
-    "GCF_000146045": "Saccharomyces cerevisiae",
-    "GCA_000230395": "Aspergillus niger",
-    "GCF_000002655": "Aspergillus fumigatus",
-    "GCF_000182895": "Coprinopsis cinerea",
-    "GCF_000149305": "Rhizopus delemar",
-    "GCF_028827035": "Penicillium chrysogenum"
+    "GCF_000146045": "S. cerevisiae",
+    "GCA_000230395": "A. niger",
+    "GCF_000002655": "A. fumigatus",
+    "GCF_000182895": "C. cinerea",
+    "GCF_000149305": "R. delemar",
+    "GCF_028827035": "P. chrysogenum"
 }
 
 def load_embeddings(embedding_file):
@@ -68,61 +69,32 @@ def get_fasta_accessions(fasta_file):
 
 def add_organism_labels(ax, umap_coords, accessions, fontsize=6):
     """Add labels with lines pointing to special organisms."""
-    # Get axis limits to ensure labels stay within bounds
+    texts = []
     x_min, x_max = ax.get_xlim()
     y_min, y_max = ax.get_ylim()
-    width = x_max - x_min
-    height = y_max - y_min
-    
-    # Reduced fontsize for labels
-    fontsize = fontsize * 0.8
     
     for i, acc in enumerate(accessions):
-        # Strip version number if present
         base_acc = acc.split('.')[0]
         if base_acc in SPECIAL_ORGANISMS:
-            # Get the coordinates for this organism
             x, y = umap_coords[i, 0], umap_coords[i, 1]
             
-            # Determine whether to place label above or below based on position in plot
-            # Alternate between top and bottom placement for better distribution
-            idx = list(SPECIAL_ORGANISMS.keys()).index(base_acc)
-            if idx % 2 == 0:  # Even indices: place label above the point
-                offset_dist = height * 0.1  # 10% of plot height
-                offset_y = offset_dist
-                va_setting = 'bottom'
-            else:  # Odd indices: place label below the point
-                offset_dist = -height * 0.1
-                offset_y = offset_dist
-                va_setting = 'top'
-            
-            # Keep x-coordinate the same for straight vertical lines
-            offset_x = 0
-            
-            # Make sure label stays within axis limits with a small margin
-            margin = min(width, height) * 0.05
-            label_x = x  # Keep x-coordinate aligned with point
-            label_y = min(max(y + offset_y, y_min + margin), y_max - margin)
-            
-            # Add a straight line pointing to the organism
-            ax.annotate(
-                SPECIAL_ORGANISMS[base_acc],
-                xy=(x, y),  # Position of the organism
-                xytext=(label_x, label_y),  # Position of the text label
-                fontsize=fontsize,
-                color='black',
-                ha='center',
-                va=va_setting,
-                arrowprops=dict(
-                    arrowstyle="-",  # Simple line instead of arrow
-                    connectionstyle="arc3,rad=0",  # Straight line (rad=0)
-                    color='black',
-                    lw=0.5,
-                    alpha=0.7
-                ),
-                bbox=None,  # No background box
-                zorder=5  # Place above points but below other elements
-            )
+            # Create text annotation without arrow initially
+            text = ax.text(x, y, SPECIAL_ORGANISMS[base_acc],
+                         fontsize=fontsize,
+                         ha='center',
+                         va='bottom',
+                         color='black',
+                         zorder=5)
+            texts.append(text)
+    
+    # Adjust text positions to avoid overlaps with arrows for all labels
+    adjust_text(texts,
+               ax=ax,
+               arrowprops=dict(arrowstyle='-', color='black', lw=0.5, alpha=0.7),
+               expand_points=(1.5, 1.5),
+               force_points=(0.1, 0.1),
+               force_text=(0.5, 0.5),
+               lim=500)  # Increase iterations for better placement
 
 def create_umap_plot(embeddings, protein_ids, output_dir, gene_name, phyla=None, ax=None, save_format='png', fasta_accessions=None):
     """Create and save UMAP plot of embeddings."""
@@ -215,6 +187,11 @@ def main(gene_name, use_subplots=False, fig=None, ax=None, save_format='png'):
         ext = 'png' if save_format == 'png' else 'fig.pickle'
         print(f"Plot saved to {output_dir}/embeddings_umap_{gene_name.lower()}.{ext}")
 
+def load_outlier_accessions():
+    """Load outlier accessions from the text file."""
+    with open('/home/s233201/outliers_set.txt', 'r') as f:
+        return {line.strip().split('.')[0] for line in f}
+
 def process_gene_data(gene_name):
     """Process single gene and return UMAP coordinates and phyla"""
     embedding_file = f'/home/s233201/esm_runs/embeddings_new/{gene_name}_embeddings.npy'
@@ -222,23 +199,29 @@ def process_gene_data(gene_name):
     fasta_file = f'/home/s233201/esm_runs/inputs_new/{gene_name}.fasta'
     umap_cache_file = f'/home/s233201/esm_runs/umap_cache/{gene_name}_umap.npz'
     
-    # Create cache directory if it doesn't exist
-    os.makedirs('/home/s233201/esm_runs/umap_cache', exist_ok=True)
-    
     print(f"Processing {gene_name}...")
+    
+    # Load outliers
+    outliers = load_outlier_accessions()
     
     taxa_dict = load_taxa_info(taxa_file)
     fasta_accessions = get_fasta_accessions(fasta_file)
-    phyla = [taxa_dict[acc] for acc in fasta_accessions]
+    
+    # Filter out outliers
+    valid_indices = [i for i, acc in enumerate(fasta_accessions) if acc.split('.')[0] not in outliers]
+    filtered_accessions = [fasta_accessions[i] for i in valid_indices]
+    phyla = [taxa_dict[acc] for acc in filtered_accessions if acc in taxa_dict]
     
     # Try to load cached UMAP coordinates
     if os.path.exists(umap_cache_file):
         print(f"Loading cached UMAP coordinates for {gene_name}")
         cached_data = np.load(umap_cache_file)
-        return gene_name, cached_data['umap_coords'], phyla, fasta_accessions
+        return gene_name, cached_data['umap_coords'], phyla, filtered_accessions
     
     # If no cache exists, proceed with normal processing
     embeddings, _ = load_embeddings(embedding_file)
+    # Filter embeddings
+    embeddings = embeddings[valid_indices]
     
     similarity_matrix = cosine_similarity(embeddings)
     distance_matrix = 1 - similarity_matrix
@@ -257,7 +240,7 @@ def process_gene_data(gene_name):
     np.savez(umap_cache_file, 
              umap_coords=umap_coords)
     
-    return gene_name, umap_coords, phyla, fasta_accessions
+    return gene_name, umap_coords, phyla, filtered_accessions
 
 if __name__ == "__main__":
     gene_names = ["LYS20", "ACO2", "LYS4", "LYS12", "ARO8", "LYS2", "LYS9", "LYS1"]

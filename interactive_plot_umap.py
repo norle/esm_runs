@@ -19,16 +19,16 @@ PHYLUM_COLORS = {
     'Zoopagomycota': '#984ea3', # Purple
     'Chytridiomycota': '#ff7f00',# Orange
     'Blastocladiomycota': '#ffff33',# Yellow
-    'Cryptomycota': '#a65628'   # Brown
+    #'Cryptomycota': '#a65628'   # Brown
 }
 
 special_organisms = {
-    "GCF_000146045": "Saccharomyces cerevisiae",
-    "GCA_000230395": "Aspergillus niger",
-    "GCF_000002655": "Aspergillus fumigatus",
-    "GCF_000182895": "Coprinopsis cinerea",
-    "GCF_000149305": "Rhizopus delemar",
-    "GCF_028827035": "Penicillium chrysogenum"
+    "GCF_000146045": "S. cerevisiae",
+    "GCA_000230395": "A. niger",
+    "GCF_000002655": "A. fumigatus",
+    "GCF_000182895": "C. cinerea",
+    "GCF_000149305": "R. delemar",
+    "GCF_028827035": "P. chrysogenum"
 }
 
 def load_embeddings(embedding_file):
@@ -51,6 +51,11 @@ def get_fasta_accessions(fasta_file):
         accessions.append(acc)
     return accessions
 
+def load_outlier_accessions():
+    """Load outlier accessions from the text file."""
+    with open('/home/s233201/outliers_set.txt', 'r') as f:
+        return {line.strip().split('.')[0] for line in f}
+
 def process_gene_data_interactive(gene_name):
     """Process single gene and return UMAP coordinates, phyla, and accessions."""
     # Paths
@@ -64,10 +69,15 @@ def process_gene_data_interactive(gene_name):
     # Create cache directory if it doesn't exist
     os.makedirs('/home/s233201/esm_runs/umap_cache', exist_ok=True)
     
+    # Load outliers
+    outliers = load_outlier_accessions()
+    
     taxa_dict = load_taxa_info(taxa_file)
     fasta_accessions = get_fasta_accessions(fasta_file)
     
-    filtered_accessions = [acc for acc in fasta_accessions if acc in taxa_dict]
+    # Filter out outliers and keep only those in taxa_dict
+    filtered_accessions = [acc for acc in fasta_accessions 
+                          if acc in taxa_dict and acc.split('.')[0] not in outliers]
     phyla = [taxa_dict[acc] for acc in filtered_accessions]
     
     # Try to load cached UMAP coordinates with error handling
@@ -76,7 +86,10 @@ def process_gene_data_interactive(gene_name):
         try:
             cached_data = np.load(umap_cache_file)
             if all(key in cached_data for key in ['umap_coords', 'phyla', 'accessions']):
-                return gene_name, cached_data['umap_coords'], cached_data['phyla'], cached_data['accessions']
+                # Convert numpy arrays back to lists for consistency
+                cached_phyla = cached_data['phyla'].tolist()
+                cached_accessions = cached_data['accessions'].tolist()
+                return gene_name, cached_data['umap_coords'], cached_phyla, cached_accessions
             else:
                 print(f"Cache file for {gene_name} is missing required data. Recomputing...")
                 os.remove(umap_cache_file)  # Remove incomplete cache file
@@ -91,12 +104,11 @@ def process_gene_data_interactive(gene_name):
     # Create a mapping from fasta_accessions to their original indices
     accession_to_idx = {acc: i for i, acc in enumerate(fasta_accessions)}
     
-    # Filter embeddings to match filtered_accessions
-    # This assumes embeddings are ordered according to the original fasta_file
+    # Filter embeddings to match filtered_accessions (after outlier removal)
     indices_to_keep = [accession_to_idx[acc] for acc in filtered_accessions if acc in accession_to_idx]
     
     if not indices_to_keep:
-        print(f"Warning: No matching accessions found in taxa file for {gene_name}. Skipping.")
+        print(f"Warning: No matching accessions found in taxa file for {gene_name} after outlier removal. Skipping.")
         return gene_name, np.array([]), [], []
 
     embeddings = embeddings_all[indices_to_keep, :]
@@ -142,6 +154,34 @@ def process_gene_data_interactive(gene_name):
     
     return gene_name, umap_coords, phyla, filtered_accessions
 
+
+def adjust_label_positions(labels_data, plot_width, plot_height, min_distance=20):
+    """Simple algorithm to adjust label positions to avoid overlaps."""
+    adjusted_labels = []
+    
+    for i, (x, y, text) in enumerate(labels_data):
+        adjusted_x, adjusted_y = x, y
+        
+        # Check against all previously placed labels
+        for prev_x, prev_y, _ in adjusted_labels:
+            dx = adjusted_x - prev_x
+            dy = adjusted_y - prev_y
+            distance = np.sqrt(dx*dx + dy*dy)
+            
+            if distance < min_distance:
+                # Move label away from collision
+                if dx == 0 and dy == 0:
+                    # If exactly on top, move arbitrarily
+                    adjusted_x += min_distance
+                else:
+                    # Move along the collision vector
+                    scale = min_distance / distance
+                    adjusted_x = prev_x + dx * scale
+                    adjusted_y = prev_y + dy * scale
+        
+        adjusted_labels.append((adjusted_x, adjusted_y, text))
+    
+    return adjusted_labels
 
 def main_interactive_bokeh(gene_names, output_html_file):
     """Generates and saves an interactive UMAP plot with subplots using Bokeh."""
@@ -248,33 +288,33 @@ def main_interactive_bokeh(gene_names, output_html_file):
                         marker='circle',
                         alpha=0.7)
         
-        # Special organisms annotations with improved positioning
+        # Special organisms annotations - simplified without manual arrows
+        special_labels = []
         for acc in special_organisms:
             if acc in accessions_list:
                 idx = accessions_list.index(acc)
                 x_pos = umap_coords[idx, 0]
                 y_pos = umap_coords[idx, 1]
+                special_labels.append((x_pos, y_pos, special_organisms[acc]))
+        
+        # Adjust label positions to avoid overlaps
+        if special_labels:
+            adjusted_labels = adjust_label_positions(special_labels, 350, 350, min_distance=scale_factor)
+            
+            for (orig_x, orig_y, text), (adj_x, adj_y, _) in zip(special_labels, adjusted_labels):
+                # Add line from original point to label if position was adjusted
+                if abs(orig_x - adj_x) > 0.01 or abs(orig_y - adj_y) > 0.01:
+                    p.line([orig_x, adj_x], [orig_y, adj_y], 
+                          line_color='black', line_width=1, line_alpha=0.7)
                 
-                # Add connecting line with consistent offset
-                offset_x = scale_factor * 0.5
-                offset_y = scale_factor * 0.5
-                
-                # Alternate label positions for better distribution
-                if list(special_organisms.keys()).index(acc) % 2 == 0:
-                    offset_y *= -1  # Place label below for even indices
-                
-                p.segment(x0=x_pos, y0=y_pos, 
-                         x1=x_pos + offset_x, 
-                         y1=y_pos + offset_y,
-                         color='gray',
-                         line_width=0.5)
-                
-                p.text(x_pos + offset_x, 
-                      y_pos + offset_y,
-                      text=[special_organisms[acc]],
+                # Add the text at adjusted position
+                p.text(adj_x, adj_y,
+                      text=[text],
                       text_font_size='8pt',
-                      text_align='left',
-                      text_baseline='middle')
+                      text_align='center',
+                      text_baseline='bottom',
+                      text_color='black',
+                      text_font_style='bold')
         
         plots.append(p)
     

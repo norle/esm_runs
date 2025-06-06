@@ -73,19 +73,35 @@ def plot_dms_datashader(dm1: pd.DataFrame, dm2: pd.DataFrame, gene_name: str, ma
     pil_image = img.to_pil()
     return pil_image
 
-def generate_single_plot(args):
-    """Helper function to generate a single datashader plot."""
-    # Unpack plot dimensions from args
-    i, j, gene1, gene2, mat1, mat2, max_points, plot_width, plot_height = args
-    if i == j:
-        return i, j, None
-    try:
-        img = plot_dms_datashader(mat1, mat2, gene_name=f"{gene1}_vs_{gene2}",
-                                  max_points=max_points, plot_width=plot_width, plot_height=plot_height)
-        return i, j, img
-    except Exception as e:
-        print(f"Error generating plot for {gene1} vs {gene2}: {e}")
-        return i, j, None
+def worker_function(args):
+    """Worker function that processes a chunk of plot tasks with shared matrices."""
+    worker_id, matrices, tasks, max_points = args
+    results = []
+    
+    for i, j, gene1, gene2, plot_width, plot_height in tasks:
+        if i == j:
+            results.append((i, j, None))
+            continue
+            
+        try:
+            # Get matrices for this pair
+            mat1 = matrices[gene1].copy(deep=False)
+            mat2 = matrices[gene2].copy(deep=False)
+            
+            img = plot_dms_datashader(mat1, mat2, 
+                                    gene_name=f"{gene1}_vs_{gene2}",
+                                    max_points=max_points, 
+                                    plot_width=plot_width, 
+                                    plot_height=plot_height)
+            results.append((i, j, img))
+        except Exception as e:
+            print(f"Worker {worker_id} error plotting {gene1} vs {gene2}: {e}")
+            results.append((i, j, None))
+            
+        # Clear some memory after each plot
+        gc.collect()
+        
+    return results
 
 def create_datashader_grid(phylo_matrices, output_path='/home/s233201/figures/phylo_correlation_datashader_grid.png', max_points=None):
     """Generates a grid of datashader images for all gene pairs using parallel processing."""
@@ -99,36 +115,34 @@ def create_datashader_grid(phylo_matrices, output_path='/home/s233201/figures/ph
                             figsize=(num_genes * tile_size,
                                     num_genes * tile_size))
     dpi = fig.get_dpi()
-    # compute a smaller resolution per subplot (in pixels)
-    subplot_px = int(min(200, tile_size * dpi))  # cap at 200px
+    subplot_px = int(min(200, tile_size * dpi))
 
-    # Prepare tasks for parallel processing
+    # Prepare tasks list - just the indices and dimensions
     tasks = []
     for i in range(num_genes):
         for j in range(num_genes):
             gene1, gene2 = gene_names[i], gene_names[j]
-            # Create shallow copies to reduce memory usage
-            mat1 = phylo_matrices[gene1].copy(deep=False)
-            mat2 = phylo_matrices[gene2].copy(deep=False)
-            tasks.append((i, j, gene1, gene2, mat1, mat2, max_points, subplot_px, subplot_px))
+            tasks.append((i, j, gene1, gene2, subplot_px, subplot_px))
 
-    # Process tasks in chunks to manage memory better
-    chunk_size = min(16, len(tasks))  # Process 16 tasks at a time
+    # Split tasks among workers
+    num_workers = min(16, os.cpu_count())
+    chunk_size = (len(tasks) + num_workers - 1) // num_workers
+    worker_args = []
+    for worker_id in range(num_workers):
+        start_idx = worker_id * chunk_size
+        end_idx = min((worker_id + 1) * chunk_size, len(tasks))
+        worker_tasks = tasks[start_idx:end_idx]
+        # Pass only necessary data to each worker
+        worker_args.append((worker_id, phylo_matrices, worker_tasks, max_points))
+
     results = []
-    
-    print(f"Starting parallel processing in chunks of {chunk_size}...")
-    with concurrent.futures.ProcessPoolExecutor(max_workers=min(32, os.cpu_count())) as executor:
-        for i in range(0, len(tasks), chunk_size):
-            chunk = tasks[i:i + chunk_size]
-            chunk_results = list(tqdm(
-                executor.map(generate_single_plot, chunk),
-                total=len(chunk),
-                desc=f"Chunk {i//chunk_size + 1}/{(len(tasks) + chunk_size - 1)//chunk_size}",
-                unit="plot"
-            ))
-            results.extend(chunk_results)
-            
-            # Clear memory after each chunk
+    print(f"Starting parallel processing with {num_workers} workers...")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_workers) as executor:
+        for worker_result in tqdm(executor.map(worker_function, worker_args),
+                                total=num_workers,
+                                desc="Processing workers",
+                                unit="worker"):
+            results.extend(worker_result)
             gc.collect()
 
     print("\nRendering plot grid...")

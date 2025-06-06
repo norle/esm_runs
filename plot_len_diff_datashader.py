@@ -131,22 +131,23 @@ def process_gene(gene):
         if embed.ndim == 1:
             embed = embed.reshape(-1, 1)
 
-        embed_accessions = []
+        # Read all accessions first
         with open(ids_path, 'r') as f:
-            embed_accessions = [line.strip() for line in f.readlines()[:embed.shape[0]]]
+            embed_accessions = [line.strip() for line in f.readlines()]
 
-        if len(embed_accessions) != embed.shape[0]:
-             raise ValueError(f"Number of IDs ({len(embed_accessions)}) does not match number of embeddings ({embed.shape[0]}) for {gene}")
+        # Create mask for non-outlier accessions
+        valid_mask = np.array([acc not in outlier_accessions for acc in embed_accessions])
+        
+        # Filter both accessions and embeddings using the same mask
+        filtered_accessions = np.array(embed_accessions)[valid_mask]
+        filtered_embed = embed[valid_mask]
 
-        # Filter out outlier accessions for ESM
-        embed_accessions = [acc for acc in embed_accessions if acc not in outlier_accessions]
-        embed = embed[:len(embed_accessions)]  # Trim embeddings to match filtered accessions
-
-        embed_df = pd.DataFrame(embed, index=embed_accessions)
+        # Create distance matrix from filtered data
+        embed_df = pd.DataFrame(filtered_embed, index=filtered_accessions)
         embed_dist = pd.DataFrame(
             squareform(pdist(embed_df.values, metric='cosine')),
-            index=embed_accessions,
-            columns=embed_accessions
+            index=filtered_accessions,
+            columns=filtered_accessions
         )
         dm1 = embed_dist.reset_index().rename(columns={'index': 'accession'})
     except FileNotFoundError:
@@ -268,16 +269,16 @@ if __name__ == '__main__':
 
     rows_grid, cols_grid = 4, 2
     fig_width = 12
-    fig_height = 20
+    fig_height = 16  # Reduced from 20
 
     # Create separate figures for ESM vs Len and Phylo vs Len
     fig1, axes1 = plt.subplots(rows_grid, cols_grid, figsize=(fig_width, fig_height), squeeze=False)
-    fig1.subplots_adjust(top=0.93, hspace=0.6, wspace=0.4)
-    fig1.suptitle('ESM Distance vs Length Difference', fontsize=18)
+    fig1.subplots_adjust(top=0.95, hspace=0.3, wspace=0.2)  # Tighter spacing
+    fig1.suptitle('ESM Distance vs Length Difference', fontsize=18, y=0.98)
 
     fig2, axes2 = plt.subplots(rows_grid, cols_grid, figsize=(fig_width, fig_height), squeeze=False)
-    fig2.subplots_adjust(top=0.93, hspace=0.6, wspace=0.4)
-    fig2.suptitle('Phylogenetic Distance vs Length Difference', fontsize=18)
+    fig2.subplots_adjust(top=0.95, hspace=0.3, wspace=0.2)  # Tighter spacing
+    fig2.suptitle('Phylogenetic Distance vs Length Difference', fontsize=18, y=0.98)
 
     max_density1 = 0
     max_density2 = 0
@@ -322,14 +323,14 @@ if __name__ == '__main__':
                 r_str = f"{r1:.2f}" if r1 is not None else "N/A"
                 p_str = f"{p1:.2e}" if p1 is not None and p1 > 0.0 else "<1e-16" if p1 is not None else "N/A"
                 ax1.text(0.95, 0.95, f"r={r_str}\np={p_str}", transform=ax1.transAxes,
-                        fontsize=10, verticalalignment='top', horizontalalignment='right',
-                        bbox=dict(facecolor='white', alpha=0.7))
+                        fontsize=14, verticalalignment='top', horizontalalignment='right',
+                        bbox=dict(facecolor='white', alpha=0.8, pad=0.5, edgecolor='none'))
             else:
                 print(f"Warning: Extent missing for ESM vs Len image for {gene}")
                 ax1.text(0.5, 0.5, 'Plotting Error', horizontalalignment='center', verticalalignment='center', transform=ax1.transAxes)
         else:
             ax1.text(0.5, 0.5, 'Missing Data / Error', horizontalalignment='center', verticalalignment='center', transform=ax1.transAxes)
-        ax1.set_title(f"{gene}", fontsize=16)
+        ax1.set_title(f"{gene.upper()}", fontsize=16)
 
     # Populate the Phylo vs Len subplots
     for idx, gene in enumerate(gene_names):
@@ -357,14 +358,14 @@ if __name__ == '__main__':
                 r_str = f"{r2:.2f}" if r2 is not None else "N/A"
                 p_str = f"{p2:.2e}" if p2 is not None and  p2 > 0.0 else "<1e-16" if p2 is not None else "N/A"
                 ax2.text(0.95, 0.95, f"r={r_str}\np={p_str}", transform=ax2.transAxes,
-                        fontsize=10, verticalalignment='top', horizontalalignment='right',
-                        bbox=dict(facecolor='white', alpha=0.7))
+                        fontsize=14, verticalalignment='top', horizontalalignment='right',
+                        bbox=dict(facecolor='white', alpha=0.8, pad=0.5, edgecolor='none'))
             else:
                 print(f"Warning: Extent missing for Phylo vs Len image for {gene}")
                 ax2.text(0.5, 0.5, 'Plotting Error', horizontalalignment='center', verticalalignment='center', transform=ax2.transAxes)
         else:
             ax2.text(0.5, 0.5, 'Missing Data / Error', horizontalalignment='center', verticalalignment='center', transform=ax2.transAxes)
-        ax2.set_title(f"{gene}", fontsize=16)
+        ax2.set_title(f"{gene.upper()}", fontsize=16)
 
     # Remove any unused subplots
     for i in range(num_genes, rows_grid):
@@ -377,8 +378,8 @@ if __name__ == '__main__':
     if max_density1 > 0:
         norm1 = matplotlib.colors.Normalize(vmin=0, vmax=max_density1)
         sm1 = plt.cm.ScalarMappable(cmap=fire_cmap, norm=norm1)
-        fig1.subplots_adjust(right=0.88, top=0.93, hspace=0.6, wspace=0.4)
-        cbar_ax1 = fig1.add_axes([0.9, 0.15, 0.02, 0.7])
+        fig1.subplots_adjust(right=0.92, top=0.95, hspace=0.3, wspace=0.2)
+        cbar_ax1 = fig1.add_axes([0.93, 0.15, 0.02, 0.7])
         cbar1 = fig1.colorbar(sm1, cax=cbar_ax1, label='Density')
         cbar1.ax.tick_params(labelsize=12)
         cbar1.set_label('Density', size=14)
@@ -397,8 +398,8 @@ if __name__ == '__main__':
     if max_density2 > 0:
         norm2 = matplotlib.colors.Normalize(vmin=0, vmax=max_density2)
         sm2 = plt.cm.ScalarMappable(cmap=fire_cmap, norm=norm2)
-        fig2.subplots_adjust(right=0.88, top=0.93, hspace=0.6, wspace=0.4)
-        cbar_ax2 = fig2.add_axes([0.9, 0.15, 0.02, 0.7])
+        fig2.subplots_adjust(right=0.92, top=0.95, hspace=0.3, wspace=0.2)
+        cbar_ax2 = fig2.add_axes([0.93, 0.15, 0.02, 0.7])
         cbar2 = fig2.colorbar(sm2, cax=cbar_ax2, label='Density')
         cbar2.ax.tick_params(labelsize=12)
         cbar2.set_label('Density', size=14)

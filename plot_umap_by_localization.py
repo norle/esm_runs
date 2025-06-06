@@ -10,6 +10,7 @@ from bokeh.layouts import gridplot, row, column
 from bokeh.palettes import Category20
 from bokeh.models import ColumnDataSource, HoverTool, Legend, LegendItem, Label, Arrow, NormalHead
 import matplotlib.pyplot as plt
+from adjustText import adjust_text  # Add this import
 
 # Special organisms for labeling (add at top with other constants)
 SPECIAL_ORGANISMS = {
@@ -50,6 +51,11 @@ def get_fasta_accessions(fasta_file):
         accessions.append(acc)
     return accessions
 
+def load_outlier_accessions():
+    """Load outlier accessions from the text file."""
+    with open('/home/s233201/outliers_set.txt', 'r') as f:
+        return {line.strip().split('.')[0] for line in f}
+
 def get_localizations(gene_name):
     """Get protein localizations from DeepLoc2 output."""
     deeploc_path = f'/home/s233201/deeploc2_package/outputs/accurate/{gene_name.lower()}'
@@ -71,6 +77,9 @@ def process_gene_data(gene_name):
     os.makedirs('/home/s233201/esm_runs/umap_cache', exist_ok=True)
     print(f"Processing {gene_name}...")
     
+    # Load outliers
+    outliers = load_outlier_accessions()
+    
     # Get localizations
     loc_dict = get_localizations(gene_name)
     if loc_dict is None:
@@ -78,16 +87,46 @@ def process_gene_data(gene_name):
         return gene_name, None, None, None
     
     fasta_accessions = get_fasta_accessions(fasta_file)
-    localizations = [loc_dict.get(acc, 'Other') for acc in fasta_accessions]
+    
+    # Filter out outliers from accessions
+    filtered_accessions = [acc for acc in fasta_accessions 
+                          if acc.split('.')[0] not in outliers]
+    
+    # Get localizations for filtered accessions
+    localizations = [loc_dict.get(acc, 'Other') for acc in filtered_accessions]
     
     # Try to load cached UMAP coordinates
     if os.path.exists(umap_cache_file):
         print(f"Loading cached UMAP coordinates for {gene_name}")
-        cached_data = np.load(umap_cache_file)
-        return gene_name, cached_data['umap_coords'], localizations, fasta_accessions
+        try:
+            cached_data = np.load(umap_cache_file)
+            if all(key in cached_data for key in ['umap_coords', 'localizations', 'accessions']):
+                # Convert numpy arrays back to lists for consistency
+                cached_localizations = cached_data['localizations'].tolist()
+                cached_accessions = cached_data['accessions'].tolist()
+                return gene_name, cached_data['umap_coords'], cached_localizations, cached_accessions
+            else:
+                print(f"Cache file for {gene_name} is missing required data. Recomputing...")
+                os.remove(umap_cache_file)
+        except Exception as e:
+            print(f"Error loading cache for {gene_name}: {e}. Recomputing...")
+            if os.path.exists(umap_cache_file):
+                os.remove(umap_cache_file)
     
     # If no cache exists, proceed with processing
-    embeddings = load_embeddings(embedding_file)
+    embeddings_all = load_embeddings(embedding_file)
+    
+    # Create a mapping from fasta_accessions to their original indices
+    accession_to_idx = {acc: i for i, acc in enumerate(fasta_accessions)}
+    
+    # Filter embeddings to match filtered_accessions (after outlier removal)
+    indices_to_keep = [accession_to_idx[acc] for acc in filtered_accessions if acc in accession_to_idx]
+    
+    if not indices_to_keep:
+        print(f"Warning: No matching accessions found for {gene_name} after outlier removal. Skipping.")
+        return gene_name, None, None, None
+
+    embeddings = embeddings_all[indices_to_keep, :]
     
     # Check for minimum number of embeddings
     if embeddings.shape[0] < 2:
@@ -113,67 +152,48 @@ def process_gene_data(gene_name):
     
     umap_coords = umap_model.fit_transform(distance_matrix)
     
-    # Cache the results
-    np.savez(umap_cache_file, umap_coords=umap_coords)
+    # Cache the results with all required fields
+    try:
+        np.savez(umap_cache_file, 
+                 umap_coords=umap_coords,
+                 localizations=np.array(localizations, dtype=str),
+                 accessions=np.array(filtered_accessions, dtype=str))
+    except Exception as e:
+        print(f"Warning: Failed to cache results for {gene_name}: {e}")
+        if os.path.exists(umap_cache_file):
+            os.remove(umap_cache_file)
     
-    return gene_name, umap_coords, localizations, fasta_accessions
+    return gene_name, umap_coords, localizations, filtered_accessions
 
 def add_organism_labels(ax, umap_coords, accessions, fontsize=6):
     """Add labels with lines pointing to special organisms."""
-    # Get axis limits to ensure labels stay within bounds
+    texts = []
     x_min, x_max = ax.get_xlim()
     y_min, y_max = ax.get_ylim()
-    width = x_max - x_min
-    height = y_max - y_min
-    
-    # Reduced fontsize for labels
-    fontsize = fontsize * 0.8
     
     for i, acc in enumerate(accessions):
-        # Strip version number if present
         base_acc = acc.split('.')[0]
         if base_acc in SPECIAL_ORGANISMS:
-            # Get the coordinates for this organism
             x, y = umap_coords[i, 0], umap_coords[i, 1]
             
-            # Alternate between top and bottom placement
-            idx = list(SPECIAL_ORGANISMS.keys()).index(base_acc)
-            if idx % 2 == 0:
-                offset_dist = height * 0.1
-                offset_y = offset_dist
-                va_setting = 'bottom'
-            else:
-                offset_dist = -height * 0.1
-                offset_y = offset_dist
-                va_setting = 'top'
-            
-            # Keep x-coordinate the same for straight vertical lines
-            offset_x = 0
-            
-            # Make sure label stays within axis limits with margin
-            margin = min(width, height) * 0.05
-            label_x = x
-            label_y = min(max(y + offset_y, y_min + margin), y_max - margin)
-            
-            # Add a straight line pointing to the organism
-            ax.annotate(
-                SPECIAL_ORGANISMS[base_acc],
-                xy=(x, y),
-                xytext=(label_x, label_y),
-                fontsize=fontsize,
-                color='black',
-                ha='center',
-                va=va_setting,
-                arrowprops=dict(
-                    arrowstyle="-",
-                    connectionstyle="arc3,rad=0",
-                    color='black',
-                    lw=0.5,
-                    alpha=0.7
-                ),
-                bbox=None,
-                zorder=5
-            )
+            # Create text annotation without arrow initially
+            text = ax.text(x, y, SPECIAL_ORGANISMS[base_acc],
+                         fontsize=fontsize,
+                         ha='center',
+                         va='bottom',
+                         color='black',
+                         zorder=5)
+            texts.append(text)
+    
+    # Adjust text positions to avoid overlaps with arrows for all labels
+    if texts:
+        adjust_text(texts,
+                   ax=ax,
+                   arrowprops=dict(arrowstyle='-', color='black', lw=0.5, alpha=0.7),
+                   expand_points=(1.5, 1.5),
+                   force_points=(0.1, 0.1),
+                   force_text=(0.5, 0.5),
+                   lim=500)  # Increase iterations for better placement
 
 def main_localization_plot():
     """Generate UMAP plots colored by protein localization."""

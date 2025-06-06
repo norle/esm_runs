@@ -58,7 +58,7 @@ def plot_distance_histograms(phylo_matrices: dict, output_path: str):
             print(f"Cutoff for {gene_name}: {cutoff:.2f}")
             
             ax.hist(mean_distances, bins=30, edgecolor='black')
-            ax.set_title(f'{gene_name}')
+            ax.set_title(f'{gene_name.upper()}')
             ax.set_xlabel('Mean Distance')
             ax.set_ylabel('Frequency')
             ax.axvline(cutoff, color='red', linestyle='dashed', linewidth=1, label=f'Cutoff: {cutoff:.2f}')
@@ -83,7 +83,7 @@ if __name__ == '__main__':
     
     gene_names = ["lys20", "aco2", "lys4", "lys12", "aro8", "lys2", "lys9", "lys1"]
     print(f"Loading phylogenetic matrices for {len(gene_names)} genes...")
-    phylo_matrices = load_phylo_matrices(gene_names)
+    phylo_matrices = load_phylo_matrices(gene_names,phylo_path='/home/s233201/full_dist_mats/fast/')
     
     if phylo_matrices:
         print("Creating distance histograms...")

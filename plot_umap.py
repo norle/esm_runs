@@ -3,7 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from umap import UMAP
-from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
+from sklearn.metrics import pairwise_distances
 import os
 import pandas as pd
 from Bio import SeqIO
@@ -192,8 +193,85 @@ def load_outlier_accessions():
     with open('/home/s233201/outliers_set.txt', 'r') as f:
         return {line.strip().split('.')[0] for line in f}
 
+def calculate_embedding_diversity(embeddings, metric='cosine'):
+    """
+    Calculate diversity metrics for protein embeddings.
+    
+    Args:
+        embeddings: numpy array of shape (n_proteins, embedding_dim)
+        metric: distance metric ('cosine', 'euclidean', 'manhattan')
+    
+    Returns:
+        dict with diversity metrics
+    """
+    if metric == 'cosine':
+        # Calculate cosine distances (1 - cosine similarity)
+        similarity_matrix = cosine_similarity(embeddings)
+        distance_matrix = 1 - similarity_matrix
+    else:
+        distance_matrix = pairwise_distances(embeddings, metric=metric)
+    
+    # Remove diagonal (self-distances)
+    n = distance_matrix.shape[0]
+    upper_triangle = distance_matrix[np.triu_indices(n, k=1)]
+    
+    diversity_metrics = {
+        'mean_distance': np.mean(upper_triangle),
+        'std_distance': np.std(upper_triangle),
+        'median_distance': np.median(upper_triangle),
+        'max_distance': np.max(upper_triangle),
+        'min_distance': np.min(upper_triangle),
+        'cv_distance': np.std(upper_triangle) / np.mean(upper_triangle) if np.mean(upper_triangle) > 0 else 0,
+        'iqr_distance': np.percentile(upper_triangle, 75) - np.percentile(upper_triangle, 25),
+        'dispersion_index': np.var(upper_triangle) / np.mean(upper_triangle) if np.mean(upper_triangle) > 0 else 0
+    }
+    
+    return diversity_metrics
+
+def calculate_phylum_diversity(embeddings, phyla, metric='cosine'):
+    """
+    Calculate diversity metrics within and between phylums.
+    
+    Returns:
+        dict with within-phylum and between-phylum diversity
+    """
+    unique_phyla = list(set(phyla))
+    phylum_indices = {phylum: [i for i, p in enumerate(phyla) if p == phylum] 
+                      for phylum in unique_phyla}
+    
+    if metric == 'cosine':
+        similarity_matrix = cosine_similarity(embeddings)
+        distance_matrix = 1 - similarity_matrix
+    else:
+        distance_matrix = pairwise_distances(embeddings, metric=metric)
+    
+    within_phylum_diversity = {}
+    for phylum, indices in phylum_indices.items():
+        if len(indices) > 1:
+            phylum_distances = distance_matrix[np.ix_(indices, indices)]
+            upper_triangle = phylum_distances[np.triu_indices(len(indices), k=1)]
+            within_phylum_diversity[phylum] = {
+                'mean_distance': np.mean(upper_triangle),
+                'std_distance': np.std(upper_triangle),
+                'n_sequences': len(indices)
+            }
+    
+    # Calculate between-phylum diversity
+    between_phylum_diversity = {}
+    for i, phylum1 in enumerate(unique_phyla):
+        for phylum2 in unique_phyla[i+1:]:
+            indices1 = phylum_indices[phylum1]
+            indices2 = phylum_indices[phylum2]
+            between_distances = distance_matrix[np.ix_(indices1, indices2)].flatten()
+            between_phylum_diversity[f"{phylum1}_vs_{phylum2}"] = {
+                'mean_distance': np.mean(between_distances),
+                'std_distance': np.std(between_distances)
+            }
+    
+    return within_phylum_diversity, between_phylum_diversity
+
 def process_gene_data(gene_name):
-    """Process single gene and return UMAP coordinates and phyla"""
+    """Process single gene and return UMAP coordinates, phyla, and diversity metrics"""
     embedding_file = f'/home/s233201/esm_runs/embeddings_new/{gene_name}_embeddings.npy'
     taxa_file = '/home/s233201/esm_runs/inputs/taxa.csv'
     fasta_file = f'/home/s233201/esm_runs/inputs_new/{gene_name}.fasta'
@@ -215,13 +293,26 @@ def process_gene_data(gene_name):
     # Try to load cached UMAP coordinates
     if os.path.exists(umap_cache_file):
         print(f"Loading cached UMAP coordinates for {gene_name}")
-        cached_data = np.load(umap_cache_file)
-        return gene_name, cached_data['umap_coords'], phyla, filtered_accessions
+        cached_data = np.load(umap_cache_file, allow_pickle=True)
+        
+        # Check if diversity metrics are in cache
+        if 'diversity_metrics' in cached_data.files:
+            diversity_metrics = cached_data['diversity_metrics'].item()
+            within_phylum_div = cached_data['within_phylum_diversity'].item()
+            between_phylum_div = cached_data['between_phylum_diversity'].item()
+            return gene_name, cached_data['umap_coords'], phyla, filtered_accessions, diversity_metrics, within_phylum_div, between_phylum_div
+        else:
+            # Cache exists but without diversity metrics, need to recalculate
+            print(f"Cache exists but missing diversity metrics for {gene_name}, recalculating...")
     
-    # If no cache exists, proceed with normal processing
+    # If no cache exists or cache is incomplete, proceed with full processing
     embeddings, _ = load_embeddings(embedding_file)
     # Filter embeddings
     embeddings = embeddings[valid_indices]
+    
+    # Calculate diversity metrics
+    diversity_metrics = calculate_embedding_diversity(embeddings, metric='cosine')
+    within_phylum_div, between_phylum_div = calculate_phylum_diversity(embeddings, phyla, metric='cosine')
     
     similarity_matrix = cosine_similarity(embeddings)
     distance_matrix = 1 - similarity_matrix
@@ -236,11 +327,42 @@ def process_gene_data(gene_name):
     
     umap_coords = umap.fit_transform(distance_matrix)
     
-    # Cache the results
+    # Cache the results including diversity metrics
+    os.makedirs(os.path.dirname(umap_cache_file), exist_ok=True)
     np.savez(umap_cache_file, 
-             umap_coords=umap_coords)
+             umap_coords=umap_coords,
+             diversity_metrics=diversity_metrics,
+             within_phylum_diversity=within_phylum_div,
+             between_phylum_diversity=between_phylum_div)
     
-    return gene_name, umap_coords, phyla, filtered_accessions
+    return gene_name, umap_coords, phyla, filtered_accessions, diversity_metrics, within_phylum_div, between_phylum_div
+
+def save_diversity_results(results, output_file):
+    """Save diversity metrics to CSV file."""
+    diversity_data = []
+    
+    for result in results:
+        if len(result) == 7:  # Full result with diversity metrics
+            gene_name, _, _, _, diversity_metrics, within_phylum_div, between_phylum_div = result
+        else:  # Old cached result without diversity metrics
+            print(f"Warning: No diversity metrics for {result[0]}, skipping...")
+            continue
+            
+        row = {'gene': gene_name}
+        row.update(diversity_metrics)
+        
+        # Add within-phylum diversity averages
+        if within_phylum_div:
+            within_means = [metrics['mean_distance'] for metrics in within_phylum_div.values()]
+            within_stds = [metrics['std_distance'] for metrics in within_phylum_div.values()]
+            row['avg_within_phylum_mean'] = np.mean(within_means)
+            row['avg_within_phylum_std'] = np.mean(within_stds)
+        
+        diversity_data.append(row)
+    
+    df = pd.DataFrame(diversity_data)
+    df.to_csv(output_file, index=False)
+    print(f"Diversity metrics saved to {output_file}")
 
 if __name__ == "__main__":
     gene_names = ["LYS20", "ACO2", "LYS4", "LYS12", "ARO8", "LYS2", "LYS9", "LYS1"]
@@ -255,6 +377,22 @@ if __name__ == "__main__":
         with multiprocessing.Pool(processes=num_cores) as pool:
             results = pool.map(process_gene_data, gene_names)
         
+        # Save diversity metrics to CSV
+        save_diversity_results(results, '/home/s233201/esm_runs/plots/protein_diversity_metrics.csv')
+        
+        # Print diversity summary - handle both result formats
+        print("\nDiversity Summary (mean pairwise cosine distance):")
+        print("-" * 60)
+        valid_results = [r for r in results if len(r) == 7]
+        for gene_name, _, _, _, diversity_metrics, _, _ in valid_results:
+            print(f"{gene_name:8}: {diversity_metrics['mean_distance']:.4f} ± {diversity_metrics['std_distance']:.4f}")
+        
+        # Sort by diversity for ranking
+        if valid_results:
+            sorted_results = sorted(valid_results, key=lambda x: x[4]['mean_distance'], reverse=True)
+            print(f"\nMost diverse protein: {sorted_results[0][0]} (diversity: {sorted_results[0][4]['mean_distance']:.4f})")
+            print(f"Least diverse protein: {sorted_results[-1][0]} (diversity: {sorted_results[-1][4]['mean_distance']:.4f})")
+        
         # Calculate the figure size for a 3x3 grid with wider aspect ratio
         n_rows = 3
         n_cols = 3
@@ -268,9 +406,16 @@ if __name__ == "__main__":
         axes = axes.ravel()
         
         # Plot results with adjusted dimensions for the first 8 cells
-        for idx, (gene_name, umap_coords, phyla, fasta_accessions) in enumerate(results):
+        for idx, result in enumerate(results):
             if idx >= 8:  # Only plot in the first 8 cells
                 continue
+            
+            if len(result) == 7:  # Full result with diversity metrics
+                gene_name, umap_coords, phyla, fasta_accessions, diversity_metrics, _, _ = result
+                has_diversity = True
+            else:  # Old cached result without diversity metrics
+                gene_name, umap_coords, phyla, fasta_accessions = result
+                has_diversity = False
                 
             ax = axes[idx]
             for phylum in PHYLUM_COLORS.keys():
@@ -314,8 +459,13 @@ if __name__ == "__main__":
             # Add a subtle grid for better readability
             ax.grid(True, linestyle='--', alpha=0.2, zorder=0)
             
-            # Set title with larger font
-            ax.set_title(f'{gene_name}', fontsize=18, pad=10, fontweight='bold')
+            # Set title with diversity information if available
+            if has_diversity:
+                diversity_score = diversity_metrics['mean_distance']
+                ax.set_title(f'{gene_name}\nDiversity: {diversity_score:.3f}', 
+                            fontsize=16, pad=10, fontweight='bold')
+            else:
+                ax.set_title(f'{gene_name}', fontsize=16, pad=10, fontweight='bold')
         
         # Create an attractive legend in the last (9th) cell
         legend_ax = axes[8]

@@ -39,7 +39,7 @@ def load_single_matrix(gene, phylo_path='/home/s233201/full_dist_mats/clean/'):
         return None
 
 def calculate_single_regression(args):
-    """Calculate linear regression without intercept for a single pair of matrices."""
+    """Calculate linear regression with intercept for a single pair of matrices."""
     i, j, gene1, gene2 = args
     
     # Load matrices within the process
@@ -47,59 +47,55 @@ def calculate_single_regression(args):
     mat2 = load_single_matrix(gene2)
     
     if mat1 is None or mat2 is None:
-        return i, j, (np.nan, np.nan)
+        return i, j, (np.nan, np.nan, np.nan)
 
     common_accessions = mat1.index.intersection(mat2.index)
     if len(common_accessions) < 2:
         print(f"Warning: Less than 2 common accessions for {gene1} and {gene2}. Skipping regression.")
-        return i, j, (np.nan, np.nan)
+        return i, j, (np.nan, np.nan, np.nan)
 
     mat1_aligned = mat1.loc[common_accessions, common_accessions]
     mat2_aligned = mat2.loc[common_accessions, common_accessions]
 
-    # Convert matrices to float64 before extracting values
     mat1_aligned = mat1_aligned.astype(np.float64)
     mat2_aligned = mat2_aligned.astype(np.float64)
 
-    # Extract upper triangle (excluding diagonal)
     rows, cols = np.triu_indices(mat1_aligned.shape[0], k=1)
-    X = mat1_aligned.values[rows, cols].reshape(-1, 1)  # Independent variable
-    y = mat2_aligned.values[rows, cols]  # Dependent variable
+    X = mat1_aligned.values[rows, cols].reshape(-1, 1)
+    y = mat2_aligned.values[rows, cols]
     
-    # Remove any NaN or infinite values
     mask = np.isfinite(X.flatten()) & np.isfinite(y)
     X = X[mask].reshape(-1, 1)
     y = y[mask]
     
     if len(X) < 2:
-        return i, j, (np.nan, np.nan)
+        return i, j, (np.nan, np.nan, np.nan)
     
-    # Fit linear regression without intercept
-    reg = LinearRegression(fit_intercept=False)
+    # Fit regression model with intercept
+    reg = LinearRegression(fit_intercept=True)
     reg.fit(X, y)
     
-    # Get slope and R-squared
-    slope = reg.coef_[0]
+    # Calculate R-squared
     y_pred = reg.predict(X)
     r2 = r2_score(y, y_pred)
     
-    return i, j, (slope, r2)
+    return i, j, (reg.coef_[0], reg.intercept_, r2)
 
 def calculate_regression_matrices(gene_names):
-    """Calculates slope and R-squared matrices from linear regression without intercept."""
+    """Calculates slope, intercept, and R-squared matrices from linear regression with intercept."""
     num_genes = len(gene_names)
     slope_matrix = np.zeros((num_genes, num_genes))
+    intercept_matrix = np.zeros((num_genes, num_genes))
     r2_matrix = np.zeros((num_genes, num_genes))
 
-    # Prepare all tasks with gene names instead of matrices
     tasks = []
     for i in range(num_genes):
         for j in range(num_genes):
-            if i != j:  # Skip diagonal for regression
+            if i != j:
                 tasks.append((i, j, gene_names[i], gene_names[j]))
             else:
-                # Set diagonal values
                 slope_matrix[i, j] = 1.0  # Perfect slope for self-comparison
+                intercept_matrix[i, j] = 0.0  # Intercept is 0 for self-comparison
                 r2_matrix[i, j] = 1.0     # Perfect R-squared for self-comparison
 
     # Split tasks into 8 chunks
@@ -115,19 +111,20 @@ def calculate_regression_matrices(gene_names):
             chunk_results = list(executor.map(calculate_single_regression, chunk))
             
             # Process chunk results
-            for i, j, (slope, r2) in chunk_results:
+            for i, j, (slope, intercept, r2) in chunk_results:
                 slope_matrix[i, j] = slope
+                intercept_matrix[i, j] = intercept
                 r2_matrix[i, j] = r2
-            
+
             # Force garbage collection after each chunk
             gc.collect()
 
-    slope_df = pd.DataFrame(slope_matrix, index=gene_names, columns=gene_names)
-    r2_df = pd.DataFrame(r2_matrix, index=gene_names, columns=gene_names)
-    return slope_df, r2_df
+    return (pd.DataFrame(slope_matrix, index=gene_names, columns=gene_names),
+            pd.DataFrame(intercept_matrix, index=gene_names, columns=gene_names),
+            pd.DataFrame(r2_matrix, index=gene_names, columns=gene_names))
 
-def plot_heatmap(slope_matrix, r2_matrix, output_path='/home/s233201/figures/phylo_regression_heatmap.png'):
-    """Creates a heatmap with slopes as values and R-squared below them."""
+def plot_heatmap(slope_matrix, intercept_matrix, r2_matrix, output_path='/home/s233201/figures/phylo_regression_heatmap.png'):
+    """Creates a heatmap with regression equations and R-squared values."""
     plt.figure(figsize=(12, 10))
     
     # Create the heatmap
@@ -146,19 +143,26 @@ def plot_heatmap(slope_matrix, r2_matrix, output_path='/home/s233201/figures/phy
     cbar = plt.gcf().axes[-1]
     cbar.set_ylabel('Slope Value', size=7, weight='bold')
 
-    # Customize annotations to include R-squared values
+    # Customize annotations to include regression equation and R-squared values
     for i in range(len(slope_matrix.index)):
         for j in range(len(slope_matrix.columns)):
             text = plt.gca().texts[i * len(slope_matrix.columns) + j]
             slope = slope_matrix.iloc[i, j]
+            intercept = intercept_matrix.iloc[i, j]
             r2 = r2_matrix.iloc[i, j]
-            text.set_text(f'$\\mathbf{{{slope:.3f}}}$\nR²={r2:.2f}')
+            # Format: y = ax + b\nR²=...
+            text.set_text(f"$y={slope:.2f}x{intercept:+.2f}$\nR²={r2:.2f}")
 
     plt.title('Linear Regression Analysis', fontsize=12, weight='bold')
     plt.xlabel('Predictor Gene', fontsize=10, weight='bold')
     plt.ylabel('Response Gene', fontsize=10, weight='bold')
     plt.xticks(rotation=45, fontsize=8, weight='bold')
     plt.yticks(fontsize=8, weight='bold')
+    
+    # Set tick labels to uppercase
+    ax = plt.gca()
+    ax.set_xticklabels([label.get_text().upper() for label in ax.get_xticklabels()])
+    ax.set_yticklabels([label.get_text().upper() for label in ax.get_yticklabels()])
 
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close()
@@ -170,21 +174,24 @@ if __name__ == '__main__':
     
     gene_names = ["lys20", "aco2", "lys4", "lys12", "aro8", "lys2", "lys9", "lys1"]
     
-    print("\nCalculating linear regression without intercept for all gene pairs...")
-    slope_df, r2_df = calculate_regression_matrices(gene_names)
+    print("\nCalculating linear regression with intercept for all gene pairs...")
+    slope_df, intercept_df, r2_df = calculate_regression_matrices(gene_names)
 
     print("\nSlope Matrix:")
     print(slope_df)
+
+    print("\nIntercept Matrix:")
+    print(intercept_df)
 
     print("\nR-squared Matrix:")
     print(r2_df)
 
     # Save matrices to CSV
     slope_df.to_csv('/home/s233201/figures/phylo_slopes.csv')
+    intercept_df.to_csv('/home/s233201/figures/phylo_intercepts.csv')
     r2_df.to_csv('/home/s233201/figures/phylo_r_squared.csv')
-    print("Matrices saved to CSV files")
 
-    # Create visualization with new style
-    plot_heatmap(slope_df, r2_df)
+    # Create visualization
+    plot_heatmap(slope_df, intercept_df, r2_df)
     
     print("\nRegression analysis complete!")

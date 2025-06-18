@@ -4,10 +4,12 @@ import matplotlib.pyplot as plt
 import matplotlib
 import os
 from scipy.spatial.distance import pdist, squareform
+from scipy import stats
 import multiprocessing as mp
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
+import seaborn as sns
 
 matplotlib.use('agg')
 
@@ -223,11 +225,16 @@ def plot_interactive_histograms(gene_data):
                     y=esm_hist,
                     mode='lines',
                     fill='tonexty' if i == 0 else 'tozeroy',
-                    name=f'{gene_name} (μ={data["esm_mean"]:.3f})',
+                    name=f'{gene_name}',
                     line=dict(color=color),
                     fillcolor=color.replace('rgb', 'rgba').replace(')', ', 0.3)'),
                     legendgroup=gene_name,
-                    showlegend=True
+                    showlegend=True,
+                    hovertemplate=f'<b>{gene_name} ESM</b><br>' +
+                                  'Distance: %{x:.3f}<br>' +
+                                  'Count: %{y}<br>' +
+                                  f'Mean: {data["esm_mean"]:.3f}<br>' +
+                                  '<extra></extra>'
                 ),
                 row=1, col=1
             )
@@ -252,11 +259,16 @@ def plot_interactive_histograms(gene_data):
                     y=evol_hist,
                     mode='lines',
                     fill='tonexty' if i == 0 else 'tozeroy',
-                    name=f'{gene_name} (μ={data["evolutionary_mean"]:.3f})',
+                    name=f'{gene_name}',
                     line=dict(color=color),
                     fillcolor=color.replace('rgb', 'rgba').replace(')', ', 0.3)'),
                     legendgroup=gene_name,
-                    showlegend=False  # Don't duplicate in legend
+                    showlegend=False,  # Don't duplicate in legend
+                    hovertemplate=f'<b>{gene_name} Evolutionary</b><br>' +
+                                  'Distance: %{x:.3f}<br>' +
+                                  'Count: %{y}<br>' +
+                                  f'Mean: {data["evolutionary_mean"]:.3f}<br>' +
+                                  '<extra></extra>'
                 ),
                 row=1, col=2
             )
@@ -282,6 +294,150 @@ def plot_interactive_histograms(gene_data):
     fig.update_yaxes(title_text="Count", row=1, col=2)
     
     return fig
+
+def perform_statistical_tests(gene_data):
+    """Perform paired t-tests between all gene distributions"""
+    n_genes = len(gene_data)
+    gene_names = [data['gene'].upper() for data in gene_data]
+    
+    # Initialize matrices for p-values
+    esm_pvalues = np.ones((n_genes, n_genes))
+    evol_pvalues = np.ones((n_genes, n_genes))
+    
+    # Perform pairwise paired t-tests for ESM distances
+    print("\n" + "="*80)
+    print("PAIRWISE PAIRED T-TESTS FOR ESM DISTANCES")
+    print("="*80)
+    
+    for i in range(n_genes):
+        for j in range(i+1, n_genes):
+            # Get minimum sample size for fair comparison
+            min_size = min(len(gene_data[i]['esm_distances']), len(gene_data[j]['esm_distances']))
+            
+            # Randomly sample equal number of distances
+            esm_i = np.random.choice(gene_data[i]['esm_distances'], size=min_size, replace=False)
+            esm_j = np.random.choice(gene_data[j]['esm_distances'], size=min_size, replace=False)
+            
+            # Perform paired t-test
+            t_stat, p_val = stats.ttest_rel(esm_i, esm_j)
+            esm_pvalues[i, j] = esm_pvalues[j, i] = p_val
+            
+            significance = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else ""
+            print(f"{gene_names[i]} vs {gene_names[j]}: t={t_stat:.3f}, p={p_val:.6f} {significance}")
+    
+    # Perform pairwise paired t-tests for evolutionary distances
+    print("\n" + "="*80)
+    print("PAIRWISE PAIRED T-TESTS FOR EVOLUTIONARY DISTANCES")
+    print("="*80)
+    
+    for i in range(n_genes):
+        for j in range(i+1, n_genes):
+            # Get minimum sample size for fair comparison
+            min_size = min(len(gene_data[i]['evolutionary_distances']), len(gene_data[j]['evolutionary_distances']))
+            
+            # Randomly sample equal number of distances
+            evol_i = np.random.choice(gene_data[i]['evolutionary_distances'], size=min_size, replace=False)
+            evol_j = np.random.choice(gene_data[j]['evolutionary_distances'], size=min_size, replace=False)
+            
+            # Perform paired t-test
+            t_stat, p_val = stats.ttest_rel(evol_i, evol_j)
+            evol_pvalues[i, j] = evol_pvalues[j, i] = p_val
+            
+            significance = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else ""
+            print(f"{gene_names[i]} vs {gene_names[j]}: t={t_stat:.3f}, p={p_val:.6f} {significance}")
+    
+    # ESM vs Evolutionary distances within each gene
+    print("\n" + "="*80)
+    print("ESM vs EVOLUTIONARY DISTANCES WITHIN EACH GENE")
+    print("="*80)
+    
+    within_gene_results = []
+    for data in gene_data:
+        gene_name = data['gene'].upper()
+        
+        # Get minimum sample size for fair comparison
+        min_size = min(len(data['esm_distances']), len(data['evolutionary_distances']))
+        
+        # Randomly sample equal number of distances
+        esm_sample = np.random.choice(data['esm_distances'], size=min_size, replace=False)
+        evol_sample = np.random.choice(data['evolutionary_distances'], size=min_size, replace=False)
+        
+        # Perform paired t-test
+        t_stat, p_val = stats.ttest_rel(esm_sample, evol_sample)
+        
+        significance = "***" if p_val < 0.001 else "**" if p_val < 0.01 else "*" if p_val < 0.05 else ""
+        print(f"{gene_name}: ESM vs Evolutionary: t={t_stat:.3f}, p={p_val:.6f} {significance}")
+        
+        within_gene_results.append({
+            'gene': gene_name,
+            't_stat': t_stat,
+            'p_value': p_val,
+            'significant': p_val < 0.05
+        })
+    
+    return {
+        'esm_pvalues': esm_pvalues,
+        'evol_pvalues': evol_pvalues,
+        'gene_names': gene_names,
+        'within_gene_results': within_gene_results
+    }
+
+def plot_pvalue_heatmaps(stats_results, output_dir):
+    """Create heatmaps showing p-values from statistical tests"""
+    gene_names = stats_results['gene_names']
+    
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+    
+    # ESM p-values heatmap
+    mask = np.triu(np.ones_like(stats_results['esm_pvalues']), k=1)
+    sns.heatmap(stats_results['esm_pvalues'], 
+                xticklabels=gene_names, yticklabels=gene_names,
+                annot=True, fmt='.3f', cmap='viridis_r', 
+                mask=mask, ax=ax1, cbar_kws={'label': 'p-value'})
+    ax1.set_title('ESM Distance Pairwise Paired T-test P-values', fontsize=14)
+    
+    # Evolutionary p-values heatmap
+    sns.heatmap(stats_results['evol_pvalues'], 
+                xticklabels=gene_names, yticklabels=gene_names,
+                annot=True, fmt='.3f', cmap='viridis_r', 
+                mask=mask, ax=ax2, cbar_kws={'label': 'p-value'})
+    ax2.set_title('Evolutionary Distance Pairwise Paired T-test P-values', fontsize=14)
+    
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}/statistical_test_pvalues.png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Create bar plot for within-gene comparisons
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+    
+    genes = [result['gene'] for result in stats_results['within_gene_results']]
+    p_values = [result['p_value'] for result in stats_results['within_gene_results']]
+    colors = ['red' if p < 0.05 else 'blue' for p in p_values]
+    
+    bars = ax.bar(genes, p_values, color=colors, alpha=0.7)
+    ax.axhline(y=0.05, color='red', linestyle='--', label='p=0.05 threshold')
+    ax.set_ylabel('P-value', fontsize=12)
+    ax.set_xlabel('Gene', fontsize=12)
+    ax.set_title('ESM vs Evolutionary Distances Within Each Gene (Paired T-test P-values)', fontsize=14)
+    ax.legend()
+    
+    # Add significance annotations
+    for i, (bar, p_val) in enumerate(zip(bars, p_values)):
+        if p_val < 0.001:
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                   '***', ha='center', va='bottom', fontweight='bold')
+        elif p_val < 0.01:
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                   '**', ha='center', va='bottom', fontweight='bold')
+        elif p_val < 0.05:
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                   '*', ha='center', va='bottom', fontweight='bold')
+    
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.savefig(f'{output_dir}/within_gene_comparisons.png', dpi=300, bbox_inches='tight')
+    plt.close()
 
 def print_summary_statistics(gene_data):
     """Print summary statistics for all genes"""
@@ -315,28 +471,38 @@ if __name__ == '__main__':
         gene_data = pool.map(process_gene_distances, gene_names)
     
     # Create output directory
-    os.makedirs('esm_runs/plots/distance_histograms', exist_ok=True)
+    output_dir = 'esm_runs/plots/distance_histograms'
+    os.makedirs(output_dir, exist_ok=True)
     
     # Print summary statistics
     print_summary_statistics(gene_data)
     
+    # Perform statistical tests
+    stats_results = perform_statistical_tests(gene_data)
+    
+    # Create statistical test visualizations
+    plot_pvalue_heatmaps(stats_results, output_dir)
+    
     # Create and save individual histograms
     fig1 = plot_individual_histograms(gene_data)
-    fig1.savefig('esm_runs/plots/distance_histograms/individual_gene_histograms.png',
+    fig1.savefig(f'{output_dir}/individual_gene_histograms.png',
                 dpi=300, bbox_inches='tight')
     plt.close(fig1)
     
     # Create and save overlaid histograms
     fig2 = plot_overlaid_histograms(gene_data)
-    fig2.savefig('esm_runs/plots/distance_histograms/overlaid_histograms.png',
+    fig2.savefig(f'{output_dir}/overlaid_histograms.png',
                 dpi=300, bbox_inches='tight')
     plt.close(fig2)
     
     # Create and save interactive histograms
     fig3 = plot_interactive_histograms(gene_data)
-    fig3.write_html('esm_runs/plots/distance_histograms/interactive_histograms.html')
+    fig3.write_html(f'{output_dir}/interactive_histograms.html')
     
-    print(f"\nPlots saved to esm_runs/plots/distance_histograms/")
+    print(f"\nPlots saved to {output_dir}/")
     print("- individual_gene_histograms.png: Separate subplots for each gene")
     print("- overlaid_histograms.png: All genes overlaid in two panels")
     print("- interactive_histograms.html: Interactive plot with toggleable genes")
+    print("- statistical_test_pvalues.png: Heatmaps of pairwise paired t-test p-values")
+    print("- within_gene_comparisons.png: ESM vs evolutionary comparisons within each gene")
+    print("\nStatistical significance: *** p<0.001, ** p<0.01, * p<0.05")

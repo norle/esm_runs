@@ -265,11 +265,11 @@ if __name__ == '__main__':
 
     dm1_label = 'ESM Distance (Cosine)'
     dm2_label_len = 'Length Difference'
-    dm1_label_phylo = 'Phylogenetic Distance'
+    dm1_label_phylo = 'Evolutionary Distance'
 
-    rows_grid, cols_grid = 4, 2
-    fig_width = 12
-    fig_height = 16  # Reduced from 20
+    rows_grid, cols_grid = 3, 3
+    fig_width = 15  # Increased for 3x3 layout
+    fig_height = 15  # Square layout
 
     # Create separate figures for ESM vs Len and Phylo vs Len
     fig1, axes1 = plt.subplots(rows_grid, cols_grid, figsize=(fig_width, fig_height), squeeze=False)
@@ -349,6 +349,12 @@ if __name__ == '__main__':
             extent2 = pil_img2.info.get('extent', None)
             if extent2:
                 ax2.imshow(pil_img2, extent=extent2, aspect='auto', origin='upper')
+                
+                # Set evolutionary distance range to 0-2.5
+                xmin, xmax, ymin, ymax = extent2
+                ax2.set_xlim(0, 2.5)
+                ax2.set_ylim(ymin, ymax)
+                
                 ax2.set_xlabel(dm1_label_phylo, fontsize=14)
                 ax2.set_ylabel(dm2_label_len, fontsize=14)
                 ax2.tick_params(axis='both', which='major', labelsize=12)
@@ -368,10 +374,12 @@ if __name__ == '__main__':
         ax2.set_title(f"{gene.upper()}", fontsize=16)
 
     # Remove any unused subplots
-    for i in range(num_genes, rows_grid):
-        for j in range(cols_grid):
-            axes1[i, j].set_visible(False)
-            axes2[i, j].set_visible(False)
+    for i in range(num_genes, rows_grid * cols_grid):
+        row = i // cols_grid
+        col = i % cols_grid
+        if row < rows_grid and col < cols_grid:
+            axes1[row, col].set_visible(False)
+            axes2[row, col].set_visible(False)
 
     # Add colorbars to Figure 1 (ESM vs Len)
     print("Processing and saving Figure 1 (ESM vs Length)...")

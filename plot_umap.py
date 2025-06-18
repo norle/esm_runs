@@ -460,13 +460,9 @@ if __name__ == "__main__":
             ax.grid(True, linestyle='--', alpha=0.2, zorder=0)
             
             # Set title with diversity information if available
-            if has_diversity:
-                diversity_score = diversity_metrics['mean_distance']
-                ax.set_title(f'{gene_name}\nDiversity: {diversity_score:.3f}', 
-                            fontsize=16, pad=10, fontweight='bold')
-            else:
-                ax.set_title(f'{gene_name}', fontsize=16, pad=10, fontweight='bold')
-        
+
+            ax.set_title(f'{gene_name}', fontsize=16, pad=10, fontweight='bold')
+    
         # Create an attractive legend in the last (9th) cell
         legend_ax = axes[8]
         legend_ax.set_xticks([])
